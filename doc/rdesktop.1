@@ -1,4 +1,4 @@
-.TH rdesktop 1 "November 2005"
+.TH rdesktop 1 "2017-10-28"
 .SH NAME
 .I rdesktop
 \- Remote Desktop Protocol client
@@ -7,9 +7,9 @@
 .br
 .SH DESCRIPTION
 .I rdesktop
-is a client for Remote Desktop Protocol (RDP), used in a number of Microsoft
-products including Windows NT Terminal Server, Windows 2000 Server, Windows XP
-and Windows 2003 Server.
+is a client for Remote Desktop Protocol (RDP), used in a number of Microsoft products.
+It is known to work with Microsoft Windows server versions ranging from NT 4 terminal
+server to Windows Server 2012 R2.
 
 .SH OPTIONS
 .TP
@@ -21,7 +21,7 @@ Domain for authentication.
 .TP
 .BR "-s <shell>"
 Startup shell for the user - starts a specific application instead of Explore.
-If SeamlessRDP is enabled this is the application which i started in seamless mode.
+If SeamlessRDP is enabled this is the application which is started in seamless mode.
 .TP
 .BR "-c <directory>"
 The initial working directory for the user.  Often used in combination with -s
@@ -63,15 +63,24 @@ basic alphanumeric keys and may not work properly on all platforms
 so its use is discouraged.
 .TP
 .BR "-g <geometry>"
-Desktop geometry (WxH). If geometry is the special word "workarea", the geometry
-will be fetched from the extended window manager hints property _NET_WORKAREA, from
-the root window. The geometry can also be specified as a percentage of the whole
-screen, e.g. "-g 80%". 
+Desktop geometry (WxH[@DPI][+X[+Y]]). If geometry is the special word
+"workarea", the geometry will be fetched from the extended window
+manager hints property _NET_WORKAREA, from the root window. The
+geometry can also be specified as a percentage of the whole screen,
+e.g. "-g 80%", "-g 80%x70%".
 
 If the specified geometry depends on the screen size, and the screen
 size is changed, rdesktop will automatically reconnect using the new
 screen size. This requires that rdesktop has been compiled with RandR
 support.
+
+The optional DPI parameter should be specified if the screen rdesktop
+is being displayed on is too far from 96 DPI for unscaled Windows to
+be readable. Windows currently accepts values from 96 to 480.
+
+Offset placement of window is optional. Starting point is upper left corner of screen.
+Window manager might push into visible area, if a panel would be covered.
+The schema is "-g <value>+<xoff>+<yoff>, f.e. "-g 30%+200+600".
 .TP
 .BR "-i"
 Use password as smartcard pin. If a valid user certificate is matched in smart card
@@ -102,10 +111,14 @@ launches the desired application through SeamlessRDP.
 
 Example: rdesktop -A 'c:\\seamlessrdp\\seamlessrdpshell.exe' -s 'notepad' mywts.domain.com
 
-Any subsequential call to the above commandline example will make use of the seamless 
+Any subsequential call to the above command line example will make use of the seamless 
 connection sharing feature which spawns another notepad in the current connection to the
 specified server and then exit.
 
+.TP
+.BR "-V <tls version>"
+Set the Transport Level Security (also known as SSL) Version used.
+Should be one of the following values: 1.0, 1.1, 1.2. If the option is missing 1.0 is assumed.
 .TP
 .BR "-B"
 Use the BackingStore of the Xserver instead of the integrated one in
@@ -122,6 +135,11 @@ but everything after this is unencrypted (including interactive logins).
 .BR "-m"
 Do not send mouse motion events.  This saves bandwidth, although some Windows
 applications may rely on receiving mouse motion.
+.TP
+.BR "-M"
+Use local X cursor inherited from window manager instead of server cursor. This
+is mostly useful with -m, but is also useful if the server is sending bogus
+mouse cursors.
 .TP
 .BR "-C"
 Use private colourmap.  This will improve colour accuracy on an 8-bit display,
@@ -146,7 +164,7 @@ size, in pixels. The special word "standard" means 18 pixels.
 Sets the window title. The title must be specified using an UTF-8 string. 
 .TP
 .BR "-N"
-Enable numlock syncronization between the Xserver and the remote RDP
+Enable numlock synchronization between the Xserver and the remote RDP
 session.  This is useful with applications that looks at the numlock
 state, but might cause problems with some Xservers like Xvnc. 
 .TP
@@ -170,7 +188,7 @@ theming is enabled, and all other options are disabled (corresponding
 to modem (56 Kbps)). Setting experience to b[roadband] enables menu
 animations and full window dragging. Setting experience to l[an] will
 also enable the desktop wallpaper. Setting experience to m[odem]
-disables all (including themes). Experience can also be a hexidecimal
+disables all (including themes). Experience can also be a hexadecimal
 number containing the flags.
 .TP
 .BR "-P"
@@ -225,11 +243,15 @@ documentation for more information.
 .TP
 .BR "-r scard[:<Scard Name>=<Alias Name>[;<Vendor Name>][,...]]"
 Enables redirection of one or more smart-cards. You can provide
-static name binding between linux and windows. To do this you
+static name binding between GNU/Linux and Windows. To do this you
 can use optional parameters as described: <Scard Name> - device name in
-Linux/Unix enviroment, <Alias Name> - device name shown in Windows enviroment
+GNU/Linux and UNIX environment, <Alias Name> - device name shown in Windows environment
 <Vendor Name> - optional device vendor name. For list of examples run
 rdesktop without parameters.
+.TP
+.BR "-r clipboard:[off|PRIMARYCLIPBOARD|CLIPBOARD]"
+Enable clipboard redirection. 'PRIMARYCLIPBOARD' looks at both PRIMARY and
+CLIPBOARD when sending data to server. 'CLIPBOARD' looks at only 'CLIPBOARD'.
 .TP
 .BR "-0"
 Attach to the console of the server (requires Windows Server 2003
@@ -240,6 +262,9 @@ Use RDP version 4.
 .TP
 .BR "-5"
 Use RDP version 5 (default).
+.TP
+.BR "-v"
+Enable verbose output
 .PP
 
 .SH "CredSSP Smartcard options"
@@ -247,11 +272,11 @@ Use RDP version 5 (default).
 .BR "--sc-csp-name <name>"
 Specify the CSP (Crypto Service Provider) to use on the windows side for the smartcard
 authentication. CSP is the driver for your smartcard and it seems like this is required
-to be specified for CredSSP authentication. For swedish NetID the following CSP name is
+to be specified for CredSSP authentication. For Swedish NetID the following CSP name is
 used; "Net iD - CSP".
 .TP
 .BR "--sc-container-name <name>"
-Specify the container name, usally this is the username for default container and it seems
+Specify the container name, usually this is the username for default container and it seems
 like this is required to be specified for CredSSP authentication.
 .TP
 .BR "--sc-reader-name <name>"
@@ -267,13 +292,13 @@ Specify the card name for example; "Telia EID IP5a".
 .IP "\fB0\fP"
 RDP session terminated normally
 .IP "\fB1\fP"
-Server initiated disconnect (also returned for logoff by XP joined to a domain)
+Administrator initiated disconnect (also returned for logoff by Windows XP joined to a domain)
 .IP "\fB2\fP"
-Server initiated logoff
+Administrator initiated logout
 .IP "\fB3\fP"
-Server idle timeout reached
+Server idle session time limit reached
 .IP "\fB4\fP"
-Server logon timeout reached
+Server active session time limit reached
 .IP "\fB5\fP"
 The session was replaced
 .IP "\fB6\fP"
@@ -281,7 +306,7 @@ The server is out of memory
 .IP "\fB7\fP"
 The server denied the connection
 .IP "\fB8\fP"
-The server denied the connection for security reason
+The server denied the connection for security reasons
 .IP "\fB9\fP"
 The user cannot connect to the server due to insufficient access
 privileges
@@ -289,9 +314,9 @@ privileges
 The server does not accept saved user credentials and requires that
 the user enter their credentials for each connection
 .IP "\fB11\fP"
-Disconnect initiated by administration tool
-.IP "\fB12\fP"
 Disconnect initiated by user
+.IP "\fB12\fP"
+Logout initiated by user
 .IP "\fB16\fP"
 Internal licensing error
 .IP "\fB17\fP"
@@ -299,25 +324,55 @@ No license server available
 .IP "\fB18\fP"
 No valid license available
 .IP "\fB19\fP"
-Invalid licensing message
+Invalid licensing message from client
 .IP "\fB20\fP"
-Hardware id doesn't match software license
+The client license has been modified and does no longer match the hardware ID
 .IP "\fB21\fP"
-Client license error
+The client license is in an invalid format
 .IP "\fB22\fP"
 Network error during licensing protocol
 .IP "\fB23\fP"
 Licensing protocol was not completed
 .IP "\fB24\fP"
-Incorrect client license enryption
+Incorrect client license encryption
 .IP "\fB25\fP"
-Can't upgrade license
+Can't upgrade or renew license
 .IP "\fB26\fP"
 The server is not licensed to accept remote connections
+.IP "\fB30\fP"
+The target endpoint chosen by the broker could not be found
+.IP "\fB32\fP"
+The target endpoint is disconnecting from the broker
+.IP "\fB34\fP"
+Error occurred while being redirected by broker
+.IP "\fB35\fP"
+Error while the endpoint VM was being awakened by the broker
+.IP "\fB36\fP"
+Error while the endpoint VM was being started by the broker
+.IP "\fB37\fP"
+The IP address of the endpoint VM could not be determined by the broker
+.IP "\fB38\fP"
+No available endpoints in the connection broker pool
+.IP "\fB39\fP"
+Connection processing cancelled by the broker
+.IP "\fB40\fP"
+The connection settings could not be validated by the broker
+.IP "\fB41\fP"
+Timeout while the endpoint VM was being started by the broker
+.IP "\fB42\fP"
+Session monitoring error while the endpoint VM was being started by the broker
+.IP "\fB50\fP"
+The server can only host Remote Applications
+.IP "\fB51\fP"
+Update of session keys failed
+.IP "\fB52\fP"
+Decryption or session key creation failed
+.IP "\fB53\fP"
+Encryption failed
 .IP "\fB62\fP"
 The local client window was closed
 .IP "\fB63\fP"
-Some other, unknown error occured
+Some other, unknown error occurred
 .IP "\fB64\fP"
 Command line usage error
 .IP "\fB69\fP"

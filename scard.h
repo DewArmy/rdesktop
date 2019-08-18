@@ -2,6 +2,7 @@
    rdesktop: A Remote Desktop Protocol client.
    Smart Card support
    Copyright (C) Alexi Volkov <alexi@myrealbox.com> 2006
+   Copyright 2016 Alexander Zakharov <uglym8@gmail.com>
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -155,6 +156,7 @@ typedef struct _TSCThreadData
 	uint32 device;
 	uint32 id;
 	uint32 epoch;
+	uint32 srv_buf_len;
 	RD_NTHANDLE handle;
 	uint32 request;
 	STREAM in;

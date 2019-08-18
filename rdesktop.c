@@ -3,7 +3,8 @@
    Entrypoint and utility functions
    Copyright (C) Matthew Chapman <matthewc.unsw.edu.au> 1999-2008
    Copyright 2002-2011 Peter Astrand <astrand@cendio.se> for Cendio AB
-   Copyright 2010-2014 Henrik Andersson <hean01@cendio.se> for Cendio AB
+   Copyright 2010-2018 Henrik Andersson <hean01@cendio.se> for Cendio AB
+   Copyright 2017-2018 Alexander Zakharov <uglym8@gmail.com>
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -31,15 +32,14 @@
 #include <limits.h>
 #include <errno.h>
 #include <signal.h>
+
 #include "rdesktop.h"
 
 #ifdef HAVE_LOCALE_H
 #include <locale.h>
 #endif
-#ifdef HAVE_ICONV
 #ifdef HAVE_LANGINFO_H
 #include <langinfo.h>
-#endif
 #endif
 
 #ifdef EGD_SOCKET
@@ -50,7 +50,7 @@
 
 #include "ssl.h"
 
-/* Reconnect timeout based on approxiamted cookie life-time */
+/* Reconnect timeout based on approximated cookie life-time */
 #define RECONNECT_TIMEOUT (3600+600)
 #define RDESKTOP_LICENSE_STORE "/.local/share/rdesktop/licenses"
 
@@ -68,12 +68,17 @@ unsigned int g_keylayout = 0x409;	/* Defaults to US keyboard layout */
 int g_keyboard_type = 0x4;	/* Defaults to US keyboard layout */
 int g_keyboard_subtype = 0x0;	/* Defaults to US keyboard layout */
 int g_keyboard_functionkeys = 0xc;	/* Defaults to US keyboard layout */
-int g_sizeopt = 0;		/* If non-zero, a special size has been
-				   requested. If 1, the geometry will be fetched
-				   from _NET_WORKAREA. If negative, absolute value
-				   specifies the percent of the whole screen. */
-int g_width = 800;
-int g_height = 600;
+int g_dpi = 0;			/* device DPI: default not set */
+
+/* Following variables holds the requested width and height for a
+   rdesktop window, this is sent upon connect and tells the server
+   what size of session we want to have. Set to decent defaults. */
+uint32 g_requested_session_width = 1024;
+uint32 g_requested_session_height = 768;
+
+window_size_type_t g_window_size_type = Fixed;
+
+
 int g_xpos = 0;
 int g_ypos = 0;
 int g_pos = 0;			/* 0 position unspecified,
@@ -84,7 +89,6 @@ extern int g_tcp_port_rdp;
 int g_server_depth = -1;
 int g_win_button_size = 0;	/* If zero, disable single app mode */
 RD_BOOL g_network_error = False;
-RD_BOOL g_bitmap_compression = True;
 RD_BOOL g_sendmotion = True;
 RD_BOOL g_bitmap_cache = True;
 RD_BOOL g_bitmap_cache_persist_enable = False;
@@ -97,6 +101,7 @@ RD_BOOL g_desktop_save = True;	/* desktop save order */
 RD_BOOL g_polygon_ellipse_orders = True;	/* polygon / ellipse orders */
 RD_BOOL g_fullscreen = False;
 RD_BOOL g_grab_keyboard = True;
+RD_BOOL g_local_cursor = False;
 RD_BOOL g_hide_decorations = False;
 RDP_VERSION g_rdp_version = RDP_V5;	/* Default to version 5 */
 RD_BOOL g_rdpclip = True;
@@ -109,11 +114,12 @@ RD_BOOL g_seamless_rdp = False;
 RD_BOOL g_use_password_as_pin = False;
 char g_seamless_shell[512];
 char g_seamless_spawn_cmd[512];
+char g_tls_version[4];
 RD_BOOL g_seamless_persistent_mode = True;
 RD_BOOL g_user_quit = False;
 uint32 g_embed_wnd;
-uint32 g_rdp5_performanceflags =
-	RDP5_NO_WALLPAPER | RDP5_NO_FULLWINDOWDRAG | RDP5_NO_MENUANIMATIONS | RDP5_NO_CURSOR_SHADOW;
+uint32 g_rdp5_performanceflags = (PERF_DISABLE_FULLWINDOWDRAG |
+				  PERF_DISABLE_MENUANIMATIONS | PERF_ENABLE_FONT_SMOOTHING);
 /* Session Directory redirection */
 RD_BOOL g_redirect = False;
 char *g_redirect_server;
@@ -136,14 +142,14 @@ RD_BOOL g_has_reconnect_random = False;
 RD_BOOL g_reconnect_loop = False;
 uint8 g_client_random[SEC_RANDOM_SIZE];
 RD_BOOL g_pending_resize = False;
+RD_BOOL g_pending_resize_defer = True;
+struct timeval g_pending_resize_defer_timer = { 0 };
 
 #ifdef WITH_RDPSND
 RD_BOOL g_rdpsnd = False;
 #endif
 
-#ifdef HAVE_ICONV
 char g_codepage[16] = "";
-#endif
 
 char *g_sc_csp_name = NULL;	/* Smartcard CSP name  */
 char *g_sc_reader_name = NULL;
@@ -154,27 +160,18 @@ extern RDPDR_DEVICE g_rdpdr_device[];
 extern uint32 g_num_devices;
 extern char *g_rdpdr_clientname;
 
-#ifdef RDP2VNC
-extern int rfb_port;
-extern int defer_time;
-void
-rdp2vnc_connect(char *server, uint32 flags, char *domain, char *password,
-		char *shell, char *directory);
-#endif
+RD_BOOL password_provided = False;
+
 /* Display usage information */
 static void
 usage(char *program)
 {
 	fprintf(stderr, "rdesktop: A Remote Desktop Protocol client.\n");
 	fprintf(stderr,
-		"Version " PACKAGE_VERSION ". Copyright (C) 1999-2015 Matthew Chapman et al.\n");
+		"Version " PACKAGE_VERSION ". Copyright (C) 1999-2016 Matthew Chapman et al.\n");
 	fprintf(stderr, "See http://www.rdesktop.org/ for more information.\n\n");
 
 	fprintf(stderr, "Usage: %s [options] server[:port]\n", program);
-#ifdef RDP2VNC
-	fprintf(stderr, "   -V: vnc port\n");
-	fprintf(stderr, "   -Q: defer time (ms)\n");
-#endif
 	fprintf(stderr, "   -u: user name\n");
 	fprintf(stderr, "   -d: domain\n");
 	fprintf(stderr, "   -s: shell / seamless application to start remotely\n");
@@ -182,27 +179,27 @@ usage(char *program)
 	fprintf(stderr, "   -p: password (- to prompt)\n");
 	fprintf(stderr, "   -n: client hostname\n");
 	fprintf(stderr, "   -k: keyboard layout on server (en-us, de, sv, etc.)\n");
-	fprintf(stderr, "   -g: desktop geometry (WxH)\n");
+	fprintf(stderr, "   -g: desktop geometry (WxH[@DPI][+X[+Y]])\n");
 #ifdef WITH_SCARD
 	fprintf(stderr, "   -i: enables smartcard authentication, password is used as pin\n");
 #endif
 	fprintf(stderr, "   -f: full-screen mode\n");
 	fprintf(stderr, "   -b: force bitmap updates\n");
-#ifdef HAVE_ICONV
 	fprintf(stderr, "   -L: local codepage\n");
-#endif
 	fprintf(stderr, "   -A: path to SeamlessRDP shell, this enables SeamlessRDP mode\n");
+	fprintf(stderr, "   -V: tls version (1.0, 1.1, 1.2, defaults to 1.0)\n");
 	fprintf(stderr, "   -B: use BackingStore of X-server (if available)\n");
 	fprintf(stderr, "   -e: disable encryption (French TS)\n");
 	fprintf(stderr, "   -E: disable encryption from client to server\n");
 	fprintf(stderr, "   -m: do not send motion events\n");
+	fprintf(stderr, "   -M: use local mouse cursor\n");
 	fprintf(stderr, "   -C: use private colour map\n");
 	fprintf(stderr, "   -D: hide window manager decorations\n");
 	fprintf(stderr, "   -K: keep window manager key bindings\n");
 	fprintf(stderr, "   -S: caption button size (single application mode)\n");
 	fprintf(stderr, "   -T: window title\n");
 	fprintf(stderr, "   -t: disable use of remote ctrl\n");
-	fprintf(stderr, "   -N: enable numlock syncronization\n");
+	fprintf(stderr, "   -N: enable numlock synchronization\n");
 	fprintf(stderr, "   -X: embed into another window with a given id.\n");
 	fprintf(stderr, "   -a: connection colour depth\n");
 	fprintf(stderr, "   -z: enable rdp compression\n");
@@ -241,14 +238,14 @@ usage(char *program)
 	fprintf(stderr, "         '-r scard[:\"Scard Name\"=\"Alias Name[;Vendor Name]\"[,...]]\n");
 	fprintf(stderr, "          example: -r scard:\"eToken PRO 00 00\"=\"AKS ifdh 0\"\n");
 	fprintf(stderr,
-		"                   \"eToken PRO 00 00\" -> Device in Linux/Unix enviroment\n");
+		"                   \"eToken PRO 00 00\" -> Device in GNU/Linux and UNIX environment\n");
 	fprintf(stderr,
-		"                   \"AKS ifdh 0\"       -> Device shown in Windows enviroment \n");
+		"                   \"AKS ifdh 0\"       -> Device shown in Windows environment \n");
 	fprintf(stderr, "          example: -r scard:\"eToken PRO 00 00\"=\"AKS ifdh 0;AKS\"\n");
 	fprintf(stderr,
-		"                   \"eToken PRO 00 00\" -> Device in Linux/Unix enviroment\n");
+		"                   \"eToken PRO 00 00\" -> Device in GNU/Linux and UNIX environment\n");
 	fprintf(stderr,
-		"                   \"AKS ifdh 0\"       -> Device shown in Windows enviroment \n");
+		"                   \"AKS ifdh 0\"       -> Device shown in Microsoft Windows environment \n");
 	fprintf(stderr,
 		"                   \"AKS\"              -> Device vendor name                 \n");
 #endif
@@ -262,11 +259,12 @@ usage(char *program)
 	fprintf(stderr,
 		"                              is used to authenticate the user by smartcard\n");
 	fprintf(stderr,
-		"           sc-container-name  Specifies the container name, this is usally the username\n");
+		"           sc-container-name  Specifies the container name, this is usually the username\n");
 	fprintf(stderr, "           sc-reader-name     Smartcard reader name to use\n");
 	fprintf(stderr,
 		"           sc-card-name       Specifies the card name of the smartcard to use\n");
 #endif
+	fprintf(stderr, "   -v: enable verbose logging\n");
 
 	fprintf(stderr, "\n");
 
@@ -280,7 +278,7 @@ handle_disconnect_reason(RD_BOOL deactivated, uint16 reason)
 
 	switch (reason)
 	{
-		case exDiscReasonNoInfo:
+		case ERRINFO_NO_INFO:
 			text = "No information available";
 			if (deactivated)
 				retval = EX_OK;
@@ -288,134 +286,209 @@ handle_disconnect_reason(RD_BOOL deactivated, uint16 reason)
 				retval = EXRD_UNKNOWN;
 			break;
 
-		case exDiscReasonAPIInitiatedDisconnect:
-			text = "Server initiated disconnect";
-			retval = EXRD_API_DISCONNECT;
+		case ERRINFO_RPC_INITIATED_DISCONNECT:
+			text = "Administrator initiated disconnect";
+			retval = EXRD_DISCONNECT_BY_ADMIN;
 			break;
 
-		case exDiscReasonAPIInitiatedLogoff:
-			text = "Server initiated logoff";
-			retval = EXRD_API_LOGOFF;
+		case ERRINFO_RPC_INITIATED_LOGOFF:
+			text = "Administrator initiated logout";
+			retval = EXRD_LOGOFF_BY_ADMIN;
 			break;
 
-		case exDiscReasonServerIdleTimeout:
-			text = "Server idle timeout reached";
+		case ERRINFO_IDLE_TIMEOUT:
+			text = "Server idle session time limit reached";
 			retval = EXRD_IDLE_TIMEOUT;
 			break;
 
-		case exDiscReasonServerLogonTimeout:
-			text = "Server logon timeout reached";
+		case ERRINFO_LOGON_TIMEOUT:
+			text = "Server active session time limit reached";
 			retval = EXRD_LOGON_TIMEOUT;
 			break;
 
-		case exDiscReasonReplacedByOtherConnection:
+		case ERRINFO_DISCONNECTED_BY_OTHERCONNECTION:
 			text = "The session was replaced";
 			retval = EXRD_REPLACED;
 			break;
 
-		case exDiscReasonOutOfMemory:
+		case ERRINFO_OUT_OF_MEMORY:
 			text = "The server is out of memory";
 			retval = EXRD_OUT_OF_MEM;
 			break;
 
-		case exDiscReasonServerDeniedConnection:
+		case ERRINFO_SERVER_DENIED_CONNECTION:
 			text = "The server denied the connection";
 			retval = EXRD_DENIED;
 			break;
 
-		case exDiscReasonServerDeniedConnectionFips:
-			text = "The server denied the connection for security reason";
+		case ERRINFO_SERVER_DENIED_CONNECTION_FIPS:
+			text = "The server denied the connection for security reasons";
 			retval = EXRD_DENIED_FIPS;
 			break;
 
-		case exDiscReasonServerInsufficientPrivileges:
+		case ERRINFO_SERVER_INSUFFICIENT_PRIVILEGES:
 			text = "The user cannot connect to the server due to insufficient access privileges.";
 			retval = EXRD_INSUFFICIENT_PRIVILEGES;
 			break;
 
-		case exDiscReasonServerFreshCredentialsRequired:
+		case ERRINFO_SERVER_FRESH_CREDENTIALS_REQUIRED:
 			text = "The server does not accept saved user credentials and requires that the user enter their credentials for each connection.";
 			retval = EXRD_FRESH_CREDENTIALS_REQUIRED;
 			break;
 
-		case exDiscReasonRPCInitiatedDisconnectByUser:
-			text = "Disconnect initiated by administration tool";
-			retval = EXRD_RPC_DISCONNECT_BY_USER;
-			break;
-
-		case exDiscReasonByUser:
+		case ERRINFO_RPC_INITIATED_DISCONNECT_BYUSER:
 			text = "Disconnect initiated by user";
 			retval = EXRD_DISCONNECT_BY_USER;
 			break;
 
-		case exDiscReasonLicenseInternal:
+		case ERRINFO_LOGOFF_BYUSER:
+			text = "Logout initiated by user";
+			retval = EXRD_LOGOFF_BY_USER;
+			break;
+
+		case ERRINFO_LICENSE_INTERNAL:
 			text = "Internal licensing error";
 			retval = EXRD_LIC_INTERNAL;
 			break;
 
-		case exDiscReasonLicenseNoLicenseServer:
+		case ERRINFO_LICENSE_NO_LICENSE_SERVER:
 			text = "No license server available";
 			retval = EXRD_LIC_NOSERVER;
 			break;
 
-		case exDiscReasonLicenseNoLicense:
+		case ERRINFO_LICENSE_NO_LICENSE:
 			text = "No valid license available";
 			retval = EXRD_LIC_NOLICENSE;
 			break;
 
-		case exDiscReasonLicenseErrClientMsg:
-			text = "Invalid licensing message";
+		case ERRINFO_LICENSE_BAD_CLIENT_MSG:
+			text = "Invalid licensing message from client";
 			retval = EXRD_LIC_MSG;
 			break;
 
-		case exDiscReasonLicenseHwidDoesntMatchLicense:
-			text = "Hardware id doesn't match software license";
+		case ERRINFO_LICENSE_HWID_DOESNT_MATCH_LICENSE:
+			text = "The client license has been modified and does no longer match the hardware ID";
 			retval = EXRD_LIC_HWID;
 			break;
 
-		case exDiscReasonLicenseErrClientLicense:
-			text = "Client license error";
+		case ERRINFO_LICENSE_BAD_CLIENT_LICENSE:
+			text = "The client license is in an invalid format";
 			retval = EXRD_LIC_CLIENT;
 			break;
 
-		case exDiscReasonLicenseCantFinishProtocol:
+		case ERRINFO_LICENSE_CANT_FINISH_PROTOCOL:
 			text = "Network error during licensing protocol";
 			retval = EXRD_LIC_NET;
 			break;
 
-		case exDiscReasonLicenseClientEndedProtocol:
+		case ERRINFO_LICENSE_CLIENT_ENDED_PROTOCOL:
 			text = "Licensing protocol was not completed";
 			retval = EXRD_LIC_PROTO;
 			break;
 
-		case exDiscReasonLicenseErrClientEncryption:
+		case ERRINFO_LICENSE_BAD_CLIENT_ENCRYPTION:
 			text = "Incorrect client license encryption";
 			retval = EXRD_LIC_ENC;
 			break;
 
-		case exDiscReasonLicenseCantUpgradeLicense:
-			text = "Can't upgrade license";
+		case ERRINFO_LICENSE_CANT_UPGRADE_LICENSE:
+			text = "Can't upgrade or renew license";
 			retval = EXRD_LIC_UPGRADE;
 			break;
 
-		case exDiscReasonLicenseNoRemoteConnections:
+		case ERRINFO_LICENSE_NO_REMOTE_CONNECTIONS:
 			text = "The server is not licensed to accept remote connections";
 			retval = EXRD_LIC_NOREMOTE;
 			break;
 
+		case ERRINFO_CB_DESTINATION_NOT_FOUND:
+			text = "The target endpoint chosen by the broker could not be found";
+			retval = EXRD_CB_DEST_NOT_FOUND;
+			break;
+
+		case ERRINFO_CB_LOADING_DESTINATION:
+			text = "The target endpoint is disconnecting from the broker";
+			retval = EXRD_CB_DEST_LOADING;
+			break;
+
+		case ERRINFO_CB_REDIRECTING_TO_DESTINATION:
+			text = "Error occurred while being redirected by broker";
+			retval = EXRD_CB_REDIR_DEST;
+			break;
+
+		case ERRINFO_CB_SESSION_ONLINE_VM_WAKE:
+			text = "Error while the endpoint VM was being awakened by the broker";
+			retval = EXRD_CB_VM_WAKE;
+			break;
+
+		case ERRINFO_CB_SESSION_ONLINE_VM_BOOT:
+			text = "Error while the endpoint VM was being started by the broker";
+			retval = EXRD_CB_VM_BOOT;
+			break;
+
+		case ERRINFO_CB_SESSION_ONLINE_VM_NO_DNS:
+			text = "The IP address of the endpoint VM could not be determined by the broker";
+			retval = EXRD_CB_VM_NODNS;
+			break;
+
+		case ERRINFO_CB_DESTINATION_POOL_NOT_FREE:
+			text = "No available endpoints in the connection broker pool";
+			retval = EXRD_CB_DEST_POOL_NOT_FREE;
+			break;
+
+		case ERRINFO_CB_CONNECTION_CANCELLED:
+			text = "Connection processing cancelled by the broker";
+			retval = EXRD_CB_CONNECTION_CANCELLED;
+			break;
+
+		case ERRINFO_CB_CONNECTION_ERROR_INVALID_SETTINGS:
+			text = "The connection settings could not be validated by the broker";
+			retval = EXRD_CB_INVALID_SETTINGS;
+			break;
+
+		case ERRINFO_CB_SESSION_ONLINE_VM_BOOT_TIMEOUT:
+			text = "Timeout while the endpoint VM was being started by the broker";
+			retval = EXRD_CB_VM_BOOT_TIMEOUT;
+			break;
+
+		case ERRINFO_CB_SESSION_ONLINE_VM_SESSMON_FAILED:
+			text = "Session monitoring error while the endpoint VM was being started by the broker";
+			retval = EXRD_CB_VM_BOOT_SESSMON_FAILED;
+			break;
+
+		case ERRINFO_REMOTEAPPSNOTENABLED:
+			text = "The server can only host Remote Applications";
+			retval = EXRD_RDP_REMOTEAPPSNOTENABLED;
+			break;
+
+		case ERRINFO_UPDATESESSIONKEYFAILED:
+			text = "Update of session keys failed";
+			retval = EXRD_RDP_UPDATESESSIONKEYFAILED;
+			break;
+
+		case ERRINFO_DECRYPTFAILED:
+			text = "Decryption or session key creation failed";
+			retval = EXRD_RDP_DECRYPTFAILED;
+			break;
+
+		case ERRINFO_ENCRYPTFAILED:
+			text = "Encryption failed";
+			retval = EXRD_RDP_ENCRYPTFAILED;
+			break;
+
 		default:
-			if (reason > 0x1000 && reason < 0x7fff)
-			{
-				text = "Internal protocol error";
-			}
-			else
-			{
-				text = "Unknown reason";
-			}
+			text = "Unknown reason";
 			retval = EXRD_UNKNOWN;
 	}
-	if (reason != exDiscReasonNoInfo)
+
+	if (reason > 0x1000 && reason < 0x7fff && retval == EXRD_UNKNOWN)
+	{
+		fprintf(stderr, "Internal protocol error: %x", reason);
+	}
+	else if (reason != ERRINFO_NO_INFO)
+	{
 		fprintf(stderr, "disconnect: %s.\n", text);
+	}
 
 	return retval;
 }
@@ -423,6 +496,8 @@ handle_disconnect_reason(RD_BOOL deactivated, uint16 reason)
 static void
 rdesktop_reset_state(void)
 {
+	g_pending_resize_defer = True;
+
 	rdp_reset_state();
 #ifdef WITH_SCARD
 	scard_reset_state();
@@ -438,11 +513,22 @@ read_password(char *password, int size)
 	struct termios tios;
 	RD_BOOL ret = False;
 	int istty = 0;
+	const char *prompt;
 	char *p;
+
+
+	if (g_use_password_as_pin)
+	{
+		prompt = "Smart card PIN: ";
+	}
+	else
+	{
+		prompt = "Password: ";
+	}
 
 	if (tcgetattr(STDIN_FILENO, &tios) == 0)
 	{
-		fprintf(stderr, "Password: ");
+		fputs(prompt, stderr);
 		tios.c_lflag &= ~ECHO;
 		tcsetattr(STDIN_FILENO, TCSANOW, &tios);
 		istty = 1;
@@ -497,7 +583,7 @@ parse_server_and_port(char *server)
 	}
 	else
 	{
-		/* dns name or IPv4 style address format - server.example.com:port or 1.2.3.4:port */
+		/* DNS name or IPv4 style address format - server.example.com:port or 1.2.3.4:port */
 		p = strchr(server, ':');
 		if (p != NULL)
 		{
@@ -516,6 +602,173 @@ parse_server_and_port(char *server)
 
 }
 
+// [WxH|P%|W%xH%][@DPI][+X[+Y]]|workarea
+int
+parse_geometry_string(const char *optarg)
+{
+	sint32 value;
+	const char *ps;
+	char *pe;
+
+	/* special keywords */
+	if (strcmp(optarg, "workarea") == 0)
+	{
+		g_window_size_type = Workarea;
+		return 0;
+	}
+
+	/* parse first integer */
+	ps = optarg;
+	value = strtol(ps, &pe, 10);
+	if (ps == pe || value <= 0)
+	{
+		logger(Core, Error, "invalid geometry, expected positive integer for width");
+		return -1;
+	}
+
+	g_requested_session_width = value;
+	ps = pe;
+
+	/* expect % or x */
+	if (*ps != '%' && *ps != 'x')
+	{
+		logger(Core, Error, "invalid geometry, expected '%%' or 'x' after width");
+		return -1;
+	}
+
+	if (*ps == '%')
+	{
+		g_window_size_type = PercentageOfScreen;
+		ps++;
+		pe++;
+	}
+
+	if (*ps == 'x')
+	{
+		ps++;
+		value = strtol(ps, &pe, 10);
+		if (ps == pe || value <= 0)
+		{
+			logger(Core, Error,
+			       "invalid geometry, expected positive integer for height");
+			return -1;
+		}
+
+		g_requested_session_height = value;
+		ps = pe;
+
+		if (*ps == '%' && g_window_size_type == Fixed)
+		{
+			logger(Core, Error, "invalid geometry, unexpected '%%' after height");
+			return -1;
+		}
+
+		if (g_window_size_type == PercentageOfScreen)
+		{
+			if (*ps != '%')
+			{
+				logger(Core, Error, "invalid geometry, expected '%%' after height");
+				return -1;
+			}
+			ps++;
+			pe++;
+		}
+	}
+	else
+	{
+		if (g_window_size_type == PercentageOfScreen)
+		{
+			/* percentage of screen used for both width and height */
+			g_requested_session_height = g_requested_session_width;
+		}
+		else
+		{
+			logger(Core, Error, "invalid geometry, missing height (WxH)");
+			return -1;
+		}
+	}
+
+	/* parse optional dpi */
+	if (*ps == '@')
+	{
+		ps++;
+		pe++;
+		value = strtol(ps, &pe, 10);
+		if (ps == pe || value <= 0)
+		{
+			logger(Core, Error, "invalid geometry, expected positive integer for DPI");
+			return -1;
+		}
+
+		g_dpi = value;
+		ps = pe;
+	}
+
+	/* parse optional window position */
+	if (*ps == '+' || *ps == '-')
+	{
+		/* parse x position */
+		value = strtol(ps, &pe, 10);
+		if (ps == pe)
+		{
+			logger(Core, Error, "invalid geometry, expected an integer for X position");
+			return -1;
+		}
+
+		g_pos |= (value < 0) ? 2 : 1;
+		g_xpos = value;
+		ps = pe;
+	}
+
+	if (*ps == '+' || *ps == '-')
+	{
+		/* parse y position */
+		value = strtol(ps, &pe, 10);
+		if (ps == pe)
+		{
+			logger(Core, Error, "invalid geometry, expected an integer for Y position");
+			return -1;
+		}
+		g_pos |= (value < 0) ? 4 : 1;
+		g_ypos = value;
+		ps = pe;
+	}
+
+	if (*pe != '\0')
+	{
+		logger(Core, Error, "invalid geometry, unexpected characters at end of string");
+		return -1;
+	}
+	return 0;
+}
+
+static void
+setup_user_requested_session_size()
+{
+	switch (g_window_size_type)
+	{
+		case Fullscreen:
+			ui_get_screen_size(&g_requested_session_width, &g_requested_session_height);
+			break;
+
+		case Workarea:
+			ui_get_workarea_size(&g_requested_session_width,
+					     &g_requested_session_height);
+			break;
+
+		case Fixed:
+			break;
+
+		case PercentageOfScreen:
+			ui_get_screen_size_from_percentage(g_requested_session_width,
+							   g_requested_session_height,
+							   &g_requested_session_width,
+							   &g_requested_session_height);
+			break;
+	}
+}
+
+
 /* Client program */
 int
 main(int argc, char *argv[])
@@ -525,7 +778,7 @@ main(int argc, char *argv[])
 	char domain[256];
 	char shell[256];
 	char directory[256];
-	RD_BOOL prompt_password, deactivated;
+	RD_BOOL deactivated;
 	struct passwd *pw;
 	uint32 flags, ext_disc_reason = 0;
 	char *p;
@@ -536,6 +789,9 @@ main(int argc, char *argv[])
 #ifdef WITH_RDPSND
 	char *rdpsnd_optarg = NULL;
 #endif
+
+	/* setup debug logging from environment */
+	logger_set_subjects(getenv("RDESKTOP_DEBUG"));
 
 #ifdef HAVE_LOCALE_H
 	/* Set locale according to environment */
@@ -559,53 +815,33 @@ main(int argc, char *argv[])
 	flags = RDP_INFO_MOUSE | RDP_INFO_DISABLECTRLALTDEL
 		| RDP_INFO_UNICODE | RDP_INFO_MAXIMIZESHELL | RDP_INFO_ENABLEWINDOWSKEY;
 
-	prompt_password = False;
-	g_seamless_spawn_cmd[0] = domain[0] = g_password[0] = shell[0] = directory[0] = 0;
+	g_seamless_spawn_cmd[0] = g_tls_version[0] = domain[0] = g_password[0] = shell[0] = directory[0] = 0;
 	g_embed_wnd = 0;
 
 	g_num_devices = 0;
 
-#ifdef RDP2VNC
-#define VNCOPT "V:Q:"
-#else
-#define VNCOPT
-#endif
 	while ((c = getopt(argc, argv,
-			   VNCOPT "A:u:L:d:s:c:p:n:k:g:o:fbBeEitmzCDKS:T:NX:a:x:Pr:045h?")) != -1)
+			   "A:V:u:L:d:s:c:p:n:k:g:o:fbBeEitmMzCDKS:T:NX:a:x:Pr:045vh?")) != -1)
 	{
 		switch (c)
 		{
-#ifdef RDP2VNC
-			case 'V':
-				rfb_port = strtol(optarg, NULL, 10);
-				if (rfb_port < 100)
-					rfb_port += 5900;
-				break;
-
-			case 'Q':
-				defer_time = strtol(optarg, NULL, 10);
-				if (defer_time < 0)
-					defer_time = 0;
-				break;
-#endif
-
 			case 'A':
 				g_seamless_rdp = True;
 				STRNCPY(g_seamless_shell, optarg, sizeof(g_seamless_shell));
 				break;
 
+			case 'V':
+				STRNCPY(g_tls_version, optarg, sizeof(g_tls_version));
+				break;
+
 			case 'u':
 				g_username = (char *) xmalloc(strlen(optarg) + 1);
-				STRNCPY(g_username, optarg, strlen(optarg) + 1);
+				strcpy(g_username, optarg);
 				username_option = 1;
 				break;
 
 			case 'L':
-#ifdef HAVE_ICONV
 				STRNCPY(g_codepage, optarg, sizeof(g_codepage));
-#else
-				error("iconv support not available\n");
-#endif
 				break;
 
 			case 'd':
@@ -622,19 +858,17 @@ main(int argc, char *argv[])
 				break;
 
 			case 'p':
-				if ((optarg[0] == '-') && (optarg[1] == 0))
+				if (!((optarg[0] == '-') && (optarg[1] == 0)))
 				{
-					prompt_password = True;
-					break;
+					password_provided = True;
+					STRNCPY(g_password, optarg, sizeof(g_password));
+					flags |= RDP_INFO_AUTOLOGON;
+
+					/* try to overwrite argument so it won't appear in `ps` */
+					p = optarg;
+					while (*p)
+						*(p++) = 'X';
 				}
-
-				STRNCPY(g_password, optarg, sizeof(g_password));
-				flags |= RDP_INFO_AUTOLOGON;
-
-				/* try to overwrite argument so it won't appear in ps */
-				p = optarg;
-				while (*p)
-					*(p++) = 'X';
 				break;
 #ifdef WITH_SCARD
 			case 'i':
@@ -657,50 +891,14 @@ main(int argc, char *argv[])
 			case 'g':
 				geometry_option = True;
 				g_fullscreen = False;
-				if (!strcmp(optarg, "workarea"))
+				if (parse_geometry_string(optarg) != 0)
 				{
-					g_sizeopt = 1;
-					break;
-				}
-
-				g_width = strtol(optarg, &p, 10);
-				if (g_width <= 0)
-				{
-					error("invalid geometry\n");
 					return EX_USAGE;
 				}
-
-				if (*p == 'x')
-					g_height = strtol(p + 1, &p, 10);
-
-				if (g_height <= 0)
-				{
-					error("invalid geometry\n");
-					return EX_USAGE;
-				}
-
-				if (*p == '%')
-				{
-					g_sizeopt = -g_width;
-					g_width = 800;
-					p++;
-				}
-
-				if (*p == '+' || *p == '-')
-				{
-					g_pos |= (*p == '-') ? 2 : 1;
-					g_xpos = strtol(p, &p, 10);
-
-				}
-				if (*p == '+' || *p == '-')
-				{
-					g_pos |= (*p == '-') ? 4 : 1;
-					g_ypos = strtol(p, NULL, 10);
-				}
-
 				break;
 
 			case 'f':
+				g_window_size_type = Fullscreen;
 				g_fullscreen = True;
 				break;
 
@@ -720,6 +918,9 @@ main(int argc, char *argv[])
 				break;
 			case 'm':
 				g_sendmotion = False;
+				break;
+			case 'M':
+				g_local_cursor = True;
 				break;
 
 			case 'C':
@@ -745,7 +946,7 @@ main(int argc, char *argv[])
 
 				if (*p)
 				{
-					error("invalid button size\n");
+					logger(Core, Error, "invalid button size");
 					return EX_USAGE;
 				}
 
@@ -770,37 +971,38 @@ main(int argc, char *argv[])
 				    g_server_depth != 15 && g_server_depth != 24
 				    && g_server_depth != 32)
 				{
-					error("Invalid server colour depth.\n");
+					logger(Core, Error,
+					       "Invalid server colour depth specified");
 					return EX_USAGE;
 				}
 				break;
 
 			case 'z':
-				DEBUG(("rdp compression enabled\n"));
+				logger(Core, Debug, "rdp compression enabled");
 				flags |= (RDP_INFO_COMPRESSION | RDP_INFO_COMPRESSION2);
 				break;
 
 			case 'x':
 				if (str_startswith(optarg, "m"))	/* modem */
 				{
-					g_rdp5_performanceflags = RDP5_NO_CURSOR_SHADOW |
-						RDP5_NO_WALLPAPER | RDP5_NO_FULLWINDOWDRAG |
-						RDP5_NO_MENUANIMATIONS | RDP5_NO_THEMING;
+					g_rdp5_performanceflags = (PERF_DISABLE_CURSOR_SHADOW |
+								   PERF_DISABLE_WALLPAPER |
+								   PERF_DISABLE_FULLWINDOWDRAG |
+								   PERF_DISABLE_MENUANIMATIONS |
+								   PERF_DISABLE_THEMING);
 				}
 				else if (str_startswith(optarg, "b"))	/* broadband */
 				{
-					g_rdp5_performanceflags =
-						RDP5_NO_CURSOR_SHADOW | RDP5_NO_WALLPAPER;
+					g_rdp5_performanceflags = (PERF_DISABLE_WALLPAPER |
+								   PERF_ENABLE_FONT_SMOOTHING);
 				}
-				else if (str_startswith(optarg, "l"))	/* lan */
+				else if (str_startswith(optarg, "l"))	/* LAN */
 				{
-					g_rdp5_performanceflags =
-						RDP5_NO_CURSOR_SHADOW | RDP5_DISABLE_NOTHING;
+					g_rdp5_performanceflags = PERF_ENABLE_FONT_SMOOTHING;
 				}
 				else
 				{
-					g_rdp5_performanceflags =
-						RDP5_NO_CURSOR_SHADOW | strtol(optarg, NULL, 16);
+					g_rdp5_performanceflags = strtol(optarg, NULL, 16);
 				}
 				break;
 
@@ -831,14 +1033,16 @@ main(int argc, char *argv[])
 							}
 
 #else
-								warning("Not compiled with sound support\n");
+								logger(Core, Warning,
+								       "Not compiled with sound support");
 #endif
 
 							if (str_startswith(optarg, "off"))
 #ifdef WITH_RDPSND
 								g_rdpsnd = False;
 #else
-								warning("Not compiled with sound support\n");
+								logger(Core, Warning,
+								       "Not compiled with sound support");
 #endif
 
 							optarg = p;
@@ -849,7 +1053,8 @@ main(int argc, char *argv[])
 #ifdef WITH_RDPSND
 						g_rdpsnd = True;
 #else
-						warning("Not compiled with sound support\n");
+						logger(Core, Warning,
+						       "Not compiled with sound support");
 #endif
 					}
 				}
@@ -900,12 +1105,15 @@ main(int argc, char *argv[])
 #ifdef WITH_SCARD
 					scard_enum_devices(&g_num_devices, optarg + 5);
 #else
-					warning("Not compiled with smartcard support\n");
+					logger(Core, Warning,
+					       "Not compiled with smartcard support\n");
 #endif
 				}
 				else
 				{
-					warning("Unknown -r argument\n\n\tPossible arguments are: comport, disk, lptport, printer, sound, clipboard, scard\n");
+					logger(Core, Warning,
+					       "Unknown -r argument '%s'. Possible arguments are: comport, disk, lptport, printer, sound, clipboard, scard",
+					       optarg);
 				}
 				break;
 
@@ -926,7 +1134,9 @@ main(int argc, char *argv[])
 					char *p = strchr(optarg, '=');
 					if (p == NULL)
 					{
-						warning("Skipping option '%s' specified, lacks name=value format.\n");
+						logger(Core, Warning,
+						       "Skipping specified option '%s', lacks name=value format",
+						       optarg);
 						continue;
 					}
 
@@ -949,6 +1159,9 @@ main(int argc, char *argv[])
 				}
 				break;
 #endif
+			case 'v':
+				logger_set_verbose(1);
+				break;
 			case 'h':
 			case '?':
 			default:
@@ -961,6 +1174,12 @@ main(int argc, char *argv[])
 	{
 		usage(argv[0]);
 		return EX_USAGE;
+	}
+	if (g_local_cursor)
+	{
+		/* there is no point wasting bandwidth on cursor shadows
+		 * that we're just going to throw out anyway */
+		g_rdp5_performanceflags |= PERF_DISABLE_CURSOR_SHADOW;
 	}
 
 	STRNCPY(server, argv[optind], sizeof(server));
@@ -975,36 +1194,37 @@ main(int argc, char *argv[])
 
 		if (g_win_button_size)
 		{
-			error("You cannot use -S and -A at the same time\n");
+			logger(Core, Error, "You cannot use -S and -A at the same time");
 			return EX_USAGE;
 		}
-		g_rdp5_performanceflags &= ~RDP5_NO_FULLWINDOWDRAG;
+		g_rdp5_performanceflags &= ~PERF_DISABLE_FULLWINDOWDRAG;
 		if (geometry_option)
 		{
-			error("You cannot use -g and -A at the same time\n");
+			logger(Core, Error, "You cannot use -g and -A at the same time");
 			return EX_USAGE;
 		}
 		if (g_fullscreen)
 		{
-			error("You cannot use -f and -A at the same time\n");
+			logger(Core, Error, "You cannot use -f and -A at the same time");
 			return EX_USAGE;
 		}
 		if (g_hide_decorations)
 		{
-			error("You cannot use -D and -A at the same time\n");
+			logger(Core, Error, "You cannot use -D and -A at the same time");
 			return EX_USAGE;
 		}
 		if (g_embed_wnd)
 		{
-			error("You cannot use -X and -A at the same time\n");
+			logger(Core, Error, "You cannot use -X and -A at the same time");
 			return EX_USAGE;
 		}
 		if (g_rdp_version < RDP_V5)
 		{
-			error("You cannot use -4 and -A at the same time\n");
+			logger(Core, Error, "You cannot use -4 and -A at the same time");
 			return EX_USAGE;
 		}
-		g_sizeopt = -100;
+
+		g_window_size_type = Fullscreen;
 		g_grab_keyboard = False;
 	}
 
@@ -1013,7 +1233,8 @@ main(int argc, char *argv[])
 		pw = getpwuid(getuid());
 		if ((pw == NULL) || (pw->pw_name == NULL))
 		{
-			error("could not determine username, use -u\n");
+			logger(Core, Error,
+			       "could not determine username, use -u <username> to set one");
 			return EX_OSERR;
 		}
 		/* +1 for trailing \0 */
@@ -1022,7 +1243,6 @@ main(int argc, char *argv[])
 		STRNCPY(g_username, pw->pw_name, pwlen);
 	}
 
-#ifdef HAVE_ICONV
 	if (g_codepage[0] == 0)
 	{
 		if (setlocale(LC_CTYPE, ""))
@@ -1034,13 +1254,12 @@ main(int argc, char *argv[])
 			STRNCPY(g_codepage, DEFAULT_CODEPAGE, sizeof(g_codepage));
 		}
 	}
-#endif
 
 	if (g_hostname[0] == 0)
 	{
 		if (gethostname(fullhostname, sizeof(fullhostname)) == -1)
 		{
-			error("could not determine local hostname, use -n\n");
+			logger(Core, Error, "could not determine local hostname, use -n\n");
 			return EX_OSERR;
 		}
 
@@ -1055,7 +1274,8 @@ main(int argc, char *argv[])
 	{
 		if (locale && xkeymap_from_locale(locale))
 		{
-			fprintf(stderr, "Autoselected keyboard map %s\n", g_keymapname);
+			logger(Core, Notice, "Autoselecting keyboard map '%s' from locale",
+			       g_keymapname);
 		}
 		else
 		{
@@ -1065,9 +1285,19 @@ main(int argc, char *argv[])
 	if (locale)
 		xfree(locale);
 
-
-	if (prompt_password && read_password(g_password, sizeof(g_password)))
-		flags |= RDP_INFO_AUTOLOGON;
+	/* If no password provided at this point, prompt for password / pin */
+	if (!g_password[0] && password_provided == False)
+	{
+		if (read_password(g_password, sizeof(g_password)))
+		{
+			flags |= RDP_INFO_AUTOLOGON;
+		}
+		else
+		{
+			logger(Core, Error, "Failed to read password or pin from stdin");
+			return EX_OSERR;
+		}
+	}
 
 	if (g_title[0] == 0)
 	{
@@ -1075,29 +1305,24 @@ main(int argc, char *argv[])
 		strncat(g_title, server, sizeof(g_title) - sizeof("rdesktop - "));
 	}
 
-#ifdef RDP2VNC
-	rdp2vnc_connect(server, flags, domain, g_password, shell, directory);
-	return EX_OK;
-#else
-
 	/* Only startup ctrl functionality is seamless are used for now. */
 	if (g_use_ctrl && g_seamless_rdp)
 	{
 		if (ctrl_init(server, domain, g_username) < 0)
 		{
-			error("Failed to initialize ctrl mode.");
+			logger(Core, Error, "Failed to initialize ctrl mode");
 			exit(1);
 		}
 
 		if (ctrl_is_slave())
 		{
-			fprintf(stdout,
-				"rdesktop in slave mode sending command to master process.\n");
+			logger(Core, Notice,
+			       "rdesktop in slave mode sending command to master process");
 
 			if (g_seamless_spawn_cmd[0])
 				return ctrl_send_command("seamless.spawn", g_seamless_spawn_cmd);
 
-			fprintf(stdout, "No command specified to be spawn in seamless mode.\n");
+			logger(Core, Notice, "No command specified to be spawned in seamless mode");
 			return EX_USAGE;
 		}
 	}
@@ -1107,13 +1332,19 @@ main(int argc, char *argv[])
 
 #ifdef WITH_RDPSND
 	if (!rdpsnd_init(rdpsnd_optarg))
-		warning("Initializing sound-support failed!\n");
+		logger(Core, Warning, "Initializing sound-support failed");
 #endif
 
 	if (g_lspci_enabled)
 		lspci_init();
 
 	rdpdr_init();
+
+	dvc_init();
+	rdpedisp_init();
+
+	setup_user_requested_session_size();
+
 	g_reconnect_loop = False;
 	while (1)
 	{
@@ -1124,21 +1355,22 @@ main(int argc, char *argv[])
 			STRNCPY(domain, g_redirect_domain, sizeof(domain));
 			xfree(g_username);
 			g_username = (char *) xmalloc(strlen(g_redirect_username) + 1);
-			STRNCPY(g_username, g_redirect_username, strlen(g_redirect_username) + 1);
+			strcpy(g_username, g_redirect_username);
 			STRNCPY(server, g_redirect_server, sizeof(server));
 			flags |= RDP_INFO_AUTOLOGON;
 
-			fprintf(stderr, "Redirected to %s@%s session %d.\n",
-				g_redirect_username, g_redirect_server, g_redirect_session_id);
+			logger(Core, Notice, "Redirected to %s@%s session %d.",
+			       g_redirect_username, g_redirect_server, g_redirect_session_id);
 
 			/* A redirect on SSL from a 2003 WTS will result in a 'connection reset by peer'
 			   and therefor we just clear this error before we connect to redirected server.
 			 */
 			g_network_error = False;
-			g_redirect = False;
 		}
 
-		ui_init_connection();
+		utils_apply_session_size_limitations(&g_requested_session_width,
+						     &g_requested_session_height);
+
 		if (!rdp_connect
 		    (server, flags, domain, g_password, shell, directory, g_reconnect_loop))
 		{
@@ -1151,8 +1383,9 @@ main(int argc, char *argv[])
 			/* check if auto reconnect cookie has timed out */
 			if (time(NULL) - g_reconnect_random_ts > RECONNECT_TIMEOUT)
 			{
-				fprintf(stderr, "Tried to reconnect for %d minutes, giving up.\n",
-					RECONNECT_TIMEOUT / 60);
+				logger(Core, Notice,
+				       "Tried to reconnect for %d minutes, giving up.",
+				       RECONNECT_TIMEOUT / 60);
 				return EX_PROTOCOL;
 			}
 
@@ -1166,51 +1399,97 @@ main(int argc, char *argv[])
 			continue;
 		}
 
-		/* By setting encryption to False here, we have an encrypted login 
+		/* By setting encryption to False here, we have an encrypted login
 		   packet but unencrypted transfer of other packets */
 		if (!g_packet_encryption)
 			g_encryption_initial = g_encryption = False;
 
-		DEBUG(("Connection successful.\n"));
+		logger(Core, Verbose, "Connection successful");
 
 		rd_create_ui();
 		tcp_run_ui(True);
 
 		deactivated = False;
 		g_reconnect_loop = False;
+		ext_disc_reason = ERRINFO_UNSET;
 		rdp_main_loop(&deactivated, &ext_disc_reason);
 
 		tcp_run_ui(False);
 
-		DEBUG(("Disconnecting...\n"));
+		logger(Core, Verbose, "Disconnecting...");
 		rdp_disconnect();
 
-		if (g_redirect)
-			continue;
-
-		/* handle network error and start autoreconnect */
-		if (g_network_error && !deactivated)
+		/* Version <= Windows 2008 server have a different behaviour for
+		   user initiated disconnected. Lets translate this specific
+		   behaviour into the same as for later versions for proper
+		   handling.
+		 */
+		if (deactivated == True && ext_disc_reason == ERRINFO_NO_INFO)
 		{
-			fprintf(stderr,
-				"Disconnected due to network error, retrying to reconnect for %d minutes.\n",
-				RECONNECT_TIMEOUT / 60);
-			g_network_error = False;
-			g_reconnect_loop = True;
-			continue;
+			deactivated = 0;
+			ext_disc_reason = ERRINFO_LOGOFF_BYUSER;
+		}
+		else if (ext_disc_reason == 0)
+		{
+			/* We do not know how to handle error info value of 0 */
+			ext_disc_reason = ERRINFO_UNSET;
 		}
 
-		ui_seamless_end();
-		ui_destroy_window();
-
-		/* Enter a reconnect loop if we have a pending resize request */
-		if (g_pending_resize)
+		/* Handler disconnect */
+		if (g_user_quit || deactivated == True || ext_disc_reason != ERRINFO_UNSET)
 		{
-			g_pending_resize = False;
-			g_reconnect_loop = True;
-			continue;
+			/* We should exit the rdesktop instance */
+			break;
 		}
-		break;
+		else
+		{
+			/* We should handle a reconnect for any reason */
+			if (g_redirect)
+			{
+				logger(Core, Verbose, "Redirect reconnect loop triggered.");
+			}
+			else if (g_network_error)
+			{
+				if (g_reconnect_random_ts == 0)
+				{
+					/* If there is no auto reconnect cookie available
+					   for reconnect, do not enter reconnect loop. Windows
+					   2016 server does not send any for unknown reasons.
+					 */
+					logger(Core, Notice,
+					       "Disconnected due to network error, exiting...");
+					break;
+				}
+
+				/* handle network error and start autoreconnect */
+				logger(Core, Notice,
+				       "Disconnected due to network error, retrying to reconnect for %d minutes.",
+				       RECONNECT_TIMEOUT / 60);
+				g_network_error = False;
+				g_reconnect_loop = True;
+			}
+			else if (g_pending_resize)
+			{
+				/* Enter a reconnect loop if we have a pending resize request */
+				logger(Core, Verbose,
+				       "Resize reconnect loop triggered, new size %dx%d",
+				       g_requested_session_width, g_requested_session_height);
+				g_pending_resize = False;
+				g_reconnect_loop = True;
+
+				ui_seamless_end();
+				ui_destroy_window();
+			}
+			else
+			{
+				logger(Core, Debug, "Unhandled reconnect reason, exiting...");
+				break;
+			}
+		}
 	}
+
+	ui_seamless_end();
+	ui_destroy_window();
 
 	cache_save_state();
 	ui_deinit();
@@ -1220,7 +1499,6 @@ main(int argc, char *argv[])
 
 	return handle_disconnect_reason(deactivated, ext_disc_reason);
 
-#endif
 	if (g_redirect_username)
 		xfree(g_redirect_username);
 
@@ -1317,7 +1595,7 @@ xmalloc(int size)
 	void *mem = malloc(size);
 	if (mem == NULL)
 	{
-		error("xmalloc %d\n", size);
+		logger(Core, Error, "xmalloc, failed to allocate %d bytes", size);
 		exit(EX_UNAVAILABLE);
 	}
 	return mem;
@@ -1329,7 +1607,7 @@ exit_if_null(void *ptr)
 {
 	if (ptr == NULL)
 	{
-		error("unexpected null pointer. Out of memory?\n");
+		logger(Core, Error, "unexpected null pointer. Out of memory?");
 		exit(EX_UNAVAILABLE);
 	}
 }
@@ -1341,7 +1619,7 @@ xstrdup(const char *s)
 	char *mem = strdup(s);
 	if (mem == NULL)
 	{
-		perror("strdup");
+		logger(Core, Error, "xstrdup(), strdup() failed: %s", strerror(errno));
 		exit(EX_UNAVAILABLE);
 	}
 	return mem;
@@ -1358,7 +1636,7 @@ xrealloc(void *oldmem, size_t size)
 	mem = realloc(oldmem, size);
 	if (mem == NULL)
 	{
-		error("xrealloc %ld\n", size);
+		logger(Core, Error, "xrealloc, failed to reallocate %ld bytes", size);
 		exit(EX_UNAVAILABLE);
 	}
 	return mem;
@@ -1371,51 +1649,13 @@ xfree(void *mem)
 	free(mem);
 }
 
-/* report an error */
-void
-error(char *format, ...)
-{
-	va_list ap;
-
-	fprintf(stderr, "ERROR: ");
-
-	va_start(ap, format);
-	vfprintf(stderr, format, ap);
-	va_end(ap);
-}
-
-/* report a warning */
-void
-warning(char *format, ...)
-{
-	va_list ap;
-
-	fprintf(stderr, "WARNING: ");
-
-	va_start(ap, format);
-	vfprintf(stderr, format, ap);
-	va_end(ap);
-}
-
-/* report an unimplemented protocol feature */
-void
-unimpl(char *format, ...)
-{
-	va_list ap;
-
-	fprintf(stderr, "NOT IMPLEMENTED: ");
-
-	va_start(ap, format);
-	vfprintf(stderr, format, ap);
-	va_end(ap);
-}
-
 /* produce a hex dump */
 void
 hexdump(unsigned char *p, unsigned int len)
 {
 	unsigned char *line = p;
-	int i, thisline, offset = 0;
+	unsigned offset = 0;
+	int i, thisline;
 
 	while (offset < len)
 	{
@@ -1444,7 +1684,7 @@ hexdump(unsigned char *p, unsigned int len)
   	 Needle may be escaped by a backslash, in
 	 that case we ignore that particular needle.
   return value: returns next src pointer, for
-  	succesive executions, like in a while loop
+  	successive executions, like in a while loop
 	if retval is 0, then there are no more args.
   pitfalls:
   	src is modified. 0x00 chars are inserted to
@@ -1550,7 +1790,7 @@ str_handle_lines(const char *input, char **rest, str_handle_lines_t linehandler,
 	buf[0] = '\0';
 	if (*rest)
 		STRNCPY(buf, *rest, buflen);
-	strncat(buf, input, inputlen);
+	strncat(buf, input, buflen);
 	p = buf;
 
 	while (1)
@@ -1598,13 +1838,13 @@ subprocess(char *const argv[], str_handle_lines_t linehandler, void *data)
 
 	if (pipe(fd) < 0)
 	{
-		perror("pipe");
+		logger(Core, Error, "subprocess(), pipe() failed: %s", strerror(errno));
 		return False;
 	}
 
 	if ((child = fork()) < 0)
 	{
-		perror("fork");
+		logger(Core, Error, "subprocess(), fork() failed: %s", strerror(errno));
 		return False;
 	}
 
@@ -1620,7 +1860,7 @@ subprocess(char *const argv[], str_handle_lines_t linehandler, void *data)
 
 		/* Execute */
 		execvp(argv[0], argv);
-		perror("Error executing child");
+		logger(Core, Error, "subprocess(), execvp() failed: %s", strerror(errno));
 		_exit(128);
 	}
 
@@ -1650,7 +1890,7 @@ l_to_a(long N, int base)
 
 	register int divrem;
 
-	if (base < 36 || 2 > base)
+	if (base > 36 || 2 > base)
 		base = 10;
 
 	if (N < 0)
@@ -1731,7 +1971,7 @@ save_licence(unsigned char *data, int length)
 	path[sizeof(path) - 1] = '\0';
 	if (utils_mkdir_p(path, 0700) == -1)
 	{
-		perror(path);
+		logger(Core, Error, "save_license(), utils_mkdir_p() failed: %s", strerror(errno));
 		return;
 	}
 
@@ -1740,7 +1980,7 @@ save_licence(unsigned char *data, int length)
 	sec_hash_sha1_16(ho, hi, g_static_rdesktop_salt_16);
 	sec_hash_to_string(hash, sizeof(hash), ho, sizeof(ho));
 
-	/* write licence to {sha1}.cal.new, then atomically 
+	/* write licence to {sha1}.cal.new, then atomically
 	   rename to {sha1}.cal */
 	snprintf(path, PATH_MAX, "%s" RDESKTOP_LICENSE_STORE "/%s.cal", home, hash);
 	path[sizeof(path) - 1] = '\0';
@@ -1751,18 +1991,18 @@ save_licence(unsigned char *data, int length)
 	fd = open(tmppath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 	if (fd == -1)
 	{
-		perror(tmppath);
+		logger(Core, Error, "save_license(), open() failed: %s", strerror(errno));
 		return;
 	}
 
 	if (write(fd, data, length) != length)
 	{
-		perror(tmppath);
+		logger(Core, Error, "save_license(), write() failed: %s", strerror(errno));
 		unlink(tmppath);
 	}
 	else if (rename(tmppath, path) == -1)
 	{
-		perror(path);
+		logger(Core, Error, "save_license(), rename() failed: %s", strerror(errno));
 		unlink(tmppath);
 	}
 
@@ -1773,12 +2013,63 @@ save_licence(unsigned char *data, int length)
 void
 rd_create_ui()
 {
-	/* only create a window if we dont have one intialized */
 	if (!ui_have_window())
 	{
-		if (!ui_create_window())
+		/* create a window if we don't have one initialized */
+		if (!ui_create_window(g_requested_session_width, g_requested_session_height))
 			exit(EX_OSERR);
 	}
+	else
+	{
+		/* reset clipping if we already have a window */
+		ui_reset_clip();
+	}
+}
+
+/* TODO: Replace with recursive mkdir */
+RD_BOOL rd_certcache_mkdir(void)
+{
+	char *home;
+	char certcache_dir[PATH_MAX];
+
+	home = getenv("HOME");
+
+	if (home == NULL)
+		return False;
+
+	snprintf(certcache_dir, sizeof(certcache_dir) - 1, "%s/%s", home, ".local");
+
+	if ((mkdir(certcache_dir, S_IRWXU) == -1) && errno != EEXIST)
+	{
+		logger(Core, Error, "%s: mkdir() failed: %s", __func__, strerror(errno));
+		return False;
+	}
+
+	snprintf(certcache_dir, sizeof(certcache_dir) - 1, "%s/%s", home, ".local/share");
+
+	if ((mkdir(certcache_dir, S_IRWXU) == -1) && errno != EEXIST)
+	{
+		logger(Core, Error, "%s: mkdir() failed: %s", __func__, strerror(errno));
+		return False;
+	}
+
+	snprintf(certcache_dir, sizeof(certcache_dir) - 1, "%s/%s", home, ".local/share/rdesktop");
+
+	if ((mkdir(certcache_dir, S_IRWXU) == -1) && errno != EEXIST)
+	{
+		logger(Core, Error, "%s: mkdir() failed: %s", __func__, strerror(errno));
+		return False;
+	}
+
+	snprintf(certcache_dir, sizeof(certcache_dir) - 1, "%s/%s", home, ".local/share/rdesktop/certs");
+
+	if ((mkdir(certcache_dir, S_IRWXU) == -1) && errno != EEXIST)
+	{
+		logger(Core, Error, "%s: mkdir() failed: %s", __func__, strerror(errno));
+		return False;
+	}
+
+	return True;
 }
 
 /* Create the bitmap cache directory */
@@ -1797,7 +2088,7 @@ rd_pstcache_mkdir(void)
 
 	if ((mkdir(bmpcache_dir, S_IRWXU) == -1) && errno != EEXIST)
 	{
-		perror(bmpcache_dir);
+		logger(Core, Error, "rd_pstcache_mkdir(), mkdir() failed: %s", strerror(errno));
 		return False;
 	}
 
@@ -1805,7 +2096,7 @@ rd_pstcache_mkdir(void)
 
 	if ((mkdir(bmpcache_dir, S_IRWXU) == -1) && errno != EEXIST)
 	{
-		perror(bmpcache_dir);
+		logger(Core, Error, "rd_pstcache_mkdir(), mkdir() failed: %s", strerror(errno));
 		return False;
 	}
 
@@ -1826,7 +2117,8 @@ rd_open_file(char *filename)
 	sprintf(fn, "%s/.rdesktop/%s", home, filename);
 	fd = open(fn, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
 	if (fd == -1)
-		perror(fn);
+		logger(Core, Error, "rd_open_file(), open() failed: %s", strerror(errno));
+
 	return fd;
 }
 

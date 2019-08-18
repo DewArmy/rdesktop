@@ -92,75 +92,51 @@
 #endif
 
 /* rdesktop specific exit codes, lined up with disconnect PDU reasons */
-#define EXRD_API_DISCONNECT 1
-#define EXRD_API_LOGOFF 2
-#define EXRD_IDLE_TIMEOUT 3
-#define EXRD_LOGON_TIMEOUT 4
-#define EXRD_REPLACED 5
-#define EXRD_OUT_OF_MEM 6
-#define EXRD_DENIED 7
-#define EXRD_DENIED_FIPS 8
-#define EXRD_INSUFFICIENT_PRIVILEGES 9
-#define EXRD_FRESH_CREDENTIALS_REQUIRED 10
-#define EXRD_RPC_DISCONNECT_BY_USER 11
-#define EXRD_DISCONNECT_BY_USER 12
-#define EXRD_LIC_INTERNAL 16
-#define EXRD_LIC_NOSERVER 17
-#define EXRD_LIC_NOLICENSE 18
-#define EXRD_LIC_MSG 19
-#define EXRD_LIC_HWID 20
-#define EXRD_LIC_CLIENT 21
-#define EXRD_LIC_NET 22
-#define EXRD_LIC_PROTO 23
-#define EXRD_LIC_ENC 24
-#define EXRD_LIC_UPGRADE 25
-#define EXRD_LIC_NOREMOTE 26
+#define EXRD_DISCONNECT_BY_ADMIN         1
+#define EXRD_LOGOFF_BY_ADMIN             2
+#define EXRD_IDLE_TIMEOUT                3
+#define EXRD_LOGON_TIMEOUT               4
+#define EXRD_REPLACED                    5
+#define EXRD_OUT_OF_MEM                  6
+#define EXRD_DENIED                      7
+#define EXRD_DENIED_FIPS                 8
+#define EXRD_INSUFFICIENT_PRIVILEGES     9
+#define EXRD_FRESH_CREDENTIALS_REQUIRED  10
+#define EXRD_DISCONNECT_BY_USER          11
+#define EXRD_LOGOFF_BY_USER              12
+
+#define EXRD_LIC_INTERNAL                16
+#define EXRD_LIC_NOSERVER                17
+#define EXRD_LIC_NOLICENSE               18
+#define EXRD_LIC_MSG                     19
+#define EXRD_LIC_HWID                    20
+#define EXRD_LIC_CLIENT                  21
+#define EXRD_LIC_NET                     22
+#define EXRD_LIC_PROTO                   23
+#define EXRD_LIC_ENC                     24
+#define EXRD_LIC_UPGRADE                 25
+#define EXRD_LIC_NOREMOTE                26
+
+#define EXRD_CB_DEST_NOT_FOUND           30
+#define EXRD_CB_DEST_LOADING             32
+#define EXRD_CB_REDIR_DEST               34
+#define EXRD_CB_VM_WAKE                  35
+#define EXRD_CB_VM_BOOT                  36
+#define EXRD_CB_VM_NODNS                 37
+#define EXRD_CB_DEST_POOL_NOT_FREE       38
+#define EXRD_CB_CONNECTION_CANCELLED     39
+#define EXRD_CB_INVALID_SETTINGS         40
+#define EXRD_CB_VM_BOOT_TIMEOUT          41
+#define EXRD_CB_VM_BOOT_SESSMON_FAILED   42
+
+#define EXRD_RDP_REMOTEAPPSNOTENABLED    50
+#define EXRD_RDP_UPDATESESSIONKEYFAILED  51
+#define EXRD_RDP_DECRYPTFAILED           52
+#define EXRD_RDP_ENCRYPTFAILED           53
 
 /* other exit codes */
-#define EXRD_WINDOW_CLOSED 62
-#define EXRD_UNKNOWN 63
-
-#ifdef WITH_DEBUG
-#define DEBUG(args)	printf args;
-#else
-#define DEBUG(args)
-#endif
-
-#ifdef WITH_DEBUG_KBD
-#define DEBUG_KBD(args) printf args;
-#else
-#define DEBUG_KBD(args)
-#endif
-
-#ifdef WITH_DEBUG_RDP5
-#define DEBUG_RDP5(args) printf args;
-#else
-#define DEBUG_RDP5(args)
-#endif
-
-#ifdef WITH_DEBUG_CLIPBOARD
-#define DEBUG_CLIPBOARD(args) printf args;
-#else
-#define DEBUG_CLIPBOARD(args)
-#endif
-
-#ifdef WITH_DEBUG_SOUND
-#define DEBUG_SOUND(args) printf args;
-#else
-#define DEBUG_SOUND(args)
-#endif
-
-#ifdef WITH_DEBUG_CHANNEL
-#define DEBUG_CHANNEL(args) printf args;
-#else
-#define DEBUG_CHANNEL(args)
-#endif
-
-#ifdef WITH_DEBUG_SCARD
-#define DEBUG_SCARD(args) printf args;
-#else
-#define DEBUG_SCARD(args)
-#endif
+#define EXRD_WINDOW_CLOSED  62
+#define EXRD_UNKNOWN        63
 
 #define STRNCPY(dst,src,n)	{ strncpy(dst,src,n-1); dst[n-1] = 0; }
 
@@ -188,7 +164,7 @@
         ((tvp)->tv_sec = (tvp)->tv_usec = 0)
 #endif
 
-/* If configure does not define the endianess, try
+/* If configure does not define the endianness, try
    to find it out */
 #if !defined(L_ENDIAN) && !defined(B_ENDIAN)
 #if __BYTE_ORDER == __LITTLE_ENDIAN
@@ -209,10 +185,8 @@
 #endif
 #endif
 
-#include "parse.h"
+#include "utils.h"
+#include "stream.h"
 #include "constants.h"
 #include "types.h"
-
-#ifndef MAKE_PROTO
 #include "proto.h"
-#endif

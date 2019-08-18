@@ -40,7 +40,7 @@ printer_enum_devices(uint32 * id, char *optarg)
 
 	char *pos = optarg;
 	char *pos2;
-	int count = 0;
+	size_t count = 0;
 	int already = 0;
 
 	/* we need to know how many printers we've already set up
@@ -87,8 +87,8 @@ printer_enum_devices(uint32 * id, char *optarg)
 			strcpy(pprinter_data->driver, pos2);
 		}
 
-		printf("PRINTER %s to %s driver %s\n", g_rdpdr_device[*id].name,
-		       pprinter_data->printer, pprinter_data->driver);
+		logger(Core, Debug, "printer_enum_devices(), %s to %s driver %s",
+		       g_rdpdr_device[*id].name, pprinter_data->printer, pprinter_data->driver);
 		g_rdpdr_device[*id].device_type = DEVICE_TYPE_PRINTER;
 		g_rdpdr_device[*id].pdevice_data = (void *) pprinter_data;
 		count++;
@@ -103,6 +103,11 @@ static RD_NTSTATUS
 printer_create(uint32 device_id, uint32 access, uint32 share_mode, uint32 disposition, uint32 flags,
 	       char *filename, RD_NTHANDLE * handle)
 {
+	UNUSED(access);
+	UNUSED(share_mode);
+	UNUSED(disposition);
+	UNUSED(flags);
+	UNUSED(filename);
 	char cmd[256];
 	PRINTER *pprinter_data;
 
@@ -139,8 +144,9 @@ printer_close(RD_NTHANDLE handle)
 }
 
 static RD_NTSTATUS
-printer_write(RD_NTHANDLE handle, uint8 * data, uint32 length, uint32 offset, uint32 * result)
+printer_write(RD_NTHANDLE handle, uint8 * data, uint32 length, uint64 offset, uint32 * result)
 {
+	UNUSED(offset);  /* Currently unused, MS-RDPEPC reserves for later use */
 	PRINTER *pprinter_data;
 
 	pprinter_data = get_printer_data(handle);

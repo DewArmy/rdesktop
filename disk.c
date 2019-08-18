@@ -3,6 +3,9 @@
    Disk Redirection
    Copyright (C) Jeroen Meijer <jeroen@oldambt7.com> 2003-2008
    Copyright 2003-2011 Peter Astrand <astrand@cendio.se> for Cendio AB
+   Copyright 2017 Henrik Andersson <hean01@cendio.se> for Cendio AB
+   Copyright 2017 Karl Mikaelsson <derfian@cendio.se> for Cendio AB
+   Copyright 2017 Alexander Zakharov <uglym8@gmail.com>
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -219,35 +222,36 @@ ftruncate_growable(int fd, off_t length)
 	/* Get current position */
 	if ((pos = lseek(fd, 0, SEEK_CUR)) == -1)
 	{
-		perror("lseek");
+		logger(Disk, Error, "ftruncate_growable(), lseek() failed: %s", strerror(errno));
 		return -1;
 	}
 
 	/* Seek to new size */
 	if (lseek(fd, length, SEEK_SET) == -1)
 	{
-		perror("lseek");
+		logger(Disk, Error, "ftruncate_growable(), lseek() failed: %s", strerror(errno));
 		return -1;
 	}
 
 	/* Write a zero */
 	if (write(fd, &zero, 1) == -1)
 	{
-		perror("write");
+		logger(Disk, Error, "ftruncate_growable(), write() failed: %s", strerror(errno));
 		return -1;
 	}
 
 	/* Truncate. This shouldn't fail. */
 	if (ftruncate(fd, length) == -1)
 	{
-		perror("ftruncate");
+		logger(Disk, Error, "ftruncate_growable(), ftruncate() failed: %s",
+		       strerror(errno));
 		return -1;
 	}
 
 	/* Restore position */
 	if (lseek(fd, pos, SEEK_SET) == -1)
 	{
-		perror("lseek");
+		logger(Disk, Error, "ftruncate_growable(), lseek() failed: %s", strerror(errno));
 		return -1;
 	}
 
@@ -273,7 +277,7 @@ open_weak_exclusive(const char *pathname, int flags, mode_t mode)
 		return ret;
 	}
 
-	/* An error occured, and we are using O_EXCL. In case the FS
+	/* An error occurred, and we are using O_EXCL. In case the FS
 	   doesn't support O_EXCL, some kind of error will be
 	   returned. Unfortunately, we don't know which one. Linux
 	   2.6.8 seems to return 524, but I cannot find a documented
@@ -306,7 +310,7 @@ open_weak_exclusive(const char *pathname, int flags, mode_t mode)
 }
 
 /* Enumeration of devices from rdesktop.c        */
-/* returns numer of units found and initialized. */
+/* returns number of units found and initialized. */
 /* optarg looks like ':h=/mnt/floppy,b=/mnt/usbdevice1' */
 /* when it arrives to this function.             */
 int
@@ -315,6 +319,7 @@ disk_enum_devices(uint32 * id, char *optarg)
 	char *pos = optarg;
 	char *pos2;
 	int count = 0;
+	DISK_DEVICE *pdisk_data;
 
 	/* skip the first colon */
 	optarg++;
@@ -322,14 +327,16 @@ disk_enum_devices(uint32 * id, char *optarg)
 	{
 		pos2 = next_arg(optarg, '=');
 
+		pdisk_data = (DISK_DEVICE *) xmalloc(sizeof(DISK_DEVICE));
+		memset(pdisk_data, 0, sizeof(DISK_DEVICE));
+		strncpy(pdisk_data->name, optarg, sizeof(pdisk_data->name) - 1);
 		strncpy(g_rdpdr_device[*id].name, optarg, sizeof(g_rdpdr_device[*id].name) - 1);
-		if (strlen(optarg) > (sizeof(g_rdpdr_device[*id].name) - 1))
-			fprintf(stderr, "share name %s truncated to %s\n", optarg,
-				g_rdpdr_device[*id].name);
 
 		g_rdpdr_device[*id].local_path = (char *) xmalloc(strlen(pos2) + 1);
 		strcpy(g_rdpdr_device[*id].local_path, pos2);
 		g_rdpdr_device[*id].device_type = DEVICE_TYPE_DISK;
+		g_rdpdr_device[*id].pdevice_data = (void *) pdisk_data;
+
 		count++;
 		(*id)++;
 
@@ -343,12 +350,15 @@ static RD_NTSTATUS
 disk_create(uint32 device_id, uint32 accessmask, uint32 sharemode, uint32 create_disposition,
 	    uint32 flags_and_attributes, char *filename, RD_NTHANDLE * phandle)
 {
-	RD_NTHANDLE handle;
+	int handle;
 	DIR *dirp;
 	int flags, mode;
 	char path[PATH_MAX];
 	struct stat filestat;
 
+	logger(Disk, Debug, "disk_create(device_id=0x%x, accessmask=0x%x, sharemode=0x%x, "
+	       "create_disp=%d, flags=0x%x, fname=%s, ...)", device_id, accessmask,
+	       sharemode, create_disposition, flags_and_attributes, filename);
 	handle = 0;
 	dirp = NULL;
 	flags = 0;
@@ -359,7 +369,7 @@ disk_create(uint32 device_id, uint32 accessmask, uint32 sharemode, uint32 create
 
 	sprintf(path, "%s%s", g_rdpdr_device[device_id].local_path, filename ? filename : "");
 
-	/* Protect against mailicous servers:
+	/* Protect against malicious servers:
 	   somelongpath/..     not allowed
 	   somelongpath/../b   not allowed
 	   somelongpath/..b    in principle ok, but currently not allowed
@@ -407,7 +417,7 @@ disk_create(uint32 device_id, uint32 accessmask, uint32 sharemode, uint32 create
 
 	/*printf("Open: \"%s\"  flags: %X, accessmask: %X sharemode: %X create disp: %X\n", path, flags_and_attributes, accessmask, sharemode, create_disposition); */
 
-	/* Get information about file and set that flag ourselfs */
+	/* Get information about file and set that flag ourselves */
 	if ((stat(path, &filestat) == 0) && (S_ISDIR(filestat.st_mode)))
 	{
 		if (flags_and_attributes & FILE_NON_DIRECTORY_FILE)
@@ -437,8 +447,8 @@ disk_create(uint32 device_id, uint32 accessmask, uint32 sharemode, uint32 create
 					return RD_STATUS_NO_SUCH_FILE;
 
 				default:
-
-					perror("opendir");
+					logger(Disk, Error, "disk_create(), opendir() failed: %s",
+					       strerror(errno));
 					return RD_STATUS_NO_SUCH_FILE;
 			}
 		}
@@ -481,21 +491,23 @@ disk_create(uint32 device_id, uint32 accessmask, uint32 sharemode, uint32 create
 
 					return RD_STATUS_OBJECT_NAME_COLLISION;
 				default:
-
-					perror("open");
+					logger(Disk, Error, "disk_create(), open() failed: %s",
+					       strerror(errno));
 					return RD_STATUS_NO_SUCH_FILE;
 			}
 		}
 
 		/* all read and writes of files should be non blocking */
 		if (fcntl(handle, F_SETFL, O_NONBLOCK) == -1)
-			perror("fcntl");
+			logger(Disk, Error, "disk_create(), fcntl() failed: %s", strerror(errno));
+
 	}
 
 	if (handle >= MAX_OPEN_FILES)
 	{
-		error("Maximum number of open files (%s) reached. Increase MAX_OPEN_FILES!\n",
-		      handle);
+		logger(Disk, Error,
+		       "disk_create(), handle (%d) is greater than or equal to MAX_OPEN_FILES (%d)!",
+		       handle, MAX_OPEN_FILES);
 		exit(EX_SOFTWARE);
 	}
 
@@ -522,6 +534,8 @@ disk_close(RD_NTHANDLE handle)
 {
 	struct fileinfo *pfinfo;
 
+	logger(Disk, Debug, "disk_close(handle=0x%x)", handle);
+
 	pfinfo = &(g_fileinfo[handle]);
 
 	if (pfinfo->accessmask & GENERIC_ALL || pfinfo->accessmask & GENERIC_WRITE)
@@ -533,14 +547,15 @@ disk_close(RD_NTHANDLE handle)
 	{
 		if (closedir(pfinfo->pdir) < 0)
 		{
-			perror("closedir");
+			logger(Disk, Error, "disk_close(), closedir() failed: %s", strerror(errno));
 			return RD_STATUS_INVALID_HANDLE;
 		}
 
 		if (pfinfo->delete_on_close)
 			if (rmdir(pfinfo->path) < 0)
 			{
-				perror(pfinfo->path);
+				logger(Disk, Error, "disk_close(), rmdir() failed: %s",
+				       strerror(errno));
 				return RD_STATUS_ACCESS_DENIED;
 			}
 		pfinfo->delete_on_close = False;
@@ -549,13 +564,14 @@ disk_close(RD_NTHANDLE handle)
 	{
 		if (close(handle) < 0)
 		{
-			perror("close");
+			logger(Disk, Error, "disk_close(), close() failed: %s", strerror(errno));
 			return RD_STATUS_INVALID_HANDLE;
 		}
 		if (pfinfo->delete_on_close)
 			if (unlink(pfinfo->path) < 0)
 			{
-				perror(pfinfo->path);
+				logger(Disk, Error, "disk_close(), unlink() failed: %s",
+				       strerror(errno));
 				return RD_STATUS_ACCESS_DENIED;
 			}
 
@@ -566,7 +582,7 @@ disk_close(RD_NTHANDLE handle)
 }
 
 static RD_NTSTATUS
-disk_read(RD_NTHANDLE handle, uint8 * data, uint32 length, uint32 offset, uint32 * result)
+disk_read(RD_NTHANDLE handle, uint8 * data, uint32 length, uint64 offset, uint32 * result)
 {
 	int n;
 
@@ -595,7 +611,8 @@ disk_read(RD_NTHANDLE handle, uint8 * data, uint32 length, uint32 offset, uint32
 				/* return STATUS_FILE_IS_A_DIRECTORY; */
 				return RD_STATUS_NOT_IMPLEMENTED;
 			default:
-				perror("read");
+				logger(Disk, Error, "disk_read(), read failed: %s",
+				       strerror(errno));
 				return RD_STATUS_INVALID_PARAMETER;
 		}
 	}
@@ -606,7 +623,7 @@ disk_read(RD_NTHANDLE handle, uint8 * data, uint32 length, uint32 offset, uint32
 }
 
 static RD_NTSTATUS
-disk_write(RD_NTHANDLE handle, uint8 * data, uint32 length, uint32 offset, uint32 * result)
+disk_write(RD_NTHANDLE handle, uint8 * data, uint32 length, uint64 offset, uint32 * result)
 {
 	int n;
 
@@ -616,7 +633,7 @@ disk_write(RD_NTHANDLE handle, uint8 * data, uint32 length, uint32 offset, uint3
 
 	if (n < 0)
 	{
-		perror("write");
+		logger(Disk, Error, "disk_write(), write() failed: %s", strerror(errno));
 		*result = 0;
 		switch (errno)
 		{
@@ -632,6 +649,7 @@ disk_write(RD_NTHANDLE handle, uint8 * data, uint32 length, uint32 offset, uint3
 	return RD_STATUS_SUCCESS;
 }
 
+/* Btw, all used Flie* structures are described in [MS-FSCC] */
 RD_NTSTATUS
 disk_query_information(RD_NTHANDLE handle, uint32 info_class, STREAM out)
 {
@@ -639,12 +657,15 @@ disk_query_information(RD_NTHANDLE handle, uint32 info_class, STREAM out)
 	struct stat filestat;
 	char *path, *filename;
 
+	logger(Disk, Debug, "disk_query_information(handle=0x%x, info_class=0x%x)", handle,
+	       info_class);
+
 	path = g_fileinfo[handle].path;
 
 	/* Get information about file */
 	if (fstat(handle, &filestat) != 0)
 	{
-		perror("stat");
+		logger(Disk, Error, "disk_query_information(), stat() failed: %s", strerror(errno));
 		out_uint8(out, 0);
 		return RD_STATUS_ACCESS_DENIED;
 	}
@@ -654,7 +675,10 @@ disk_query_information(RD_NTHANDLE handle, uint32 info_class, STREAM out)
 	if (S_ISDIR(filestat.st_mode))
 		file_attributes |= FILE_ATTRIBUTE_DIRECTORY;
 
-	filename = 1 + strrchr(path, '/');
+	filename = strrchr(path, '/');
+	if (filename)
+		filename += 1;
+
 	if (filename && filename[0] == '.')
 		file_attributes |= FILE_ATTRIBUTE_HIDDEN;
 
@@ -690,10 +714,9 @@ disk_query_information(RD_NTHANDLE handle, uint32 info_class, STREAM out)
 
 		case FileStandardInformation:
 
-			out_uint32_le(out, filestat.st_size);	/* Allocation size */
-			out_uint32_le(out, 0);
-			out_uint32_le(out, filestat.st_size);	/* End of file */
-			out_uint32_le(out, 0);
+			out_uint64_le(out, filestat.st_size);	/* Allocation size */
+			out_uint64_le(out, filestat.st_size);	/* End of file */
+
 			out_uint32_le(out, filestat.st_nlink);	/* Number of links */
 			out_uint8(out, 0);	/* Delete pending */
 			out_uint8(out, S_ISDIR(filestat.st_mode) ? 1 : 0);	/* Directory */
@@ -706,16 +729,19 @@ disk_query_information(RD_NTHANDLE handle, uint32 info_class, STREAM out)
 			break;
 
 		default:
-
-			unimpl("IRP Query (File) Information class: 0x%x\n", info_class);
+			logger(Disk, Warning,
+			       "disk_query_information(), unhandled query information class 0x%x",
+			       info_class);
 			return RD_STATUS_INVALID_PARAMETER;
 	}
 	return RD_STATUS_SUCCESS;
 }
 
+/* 2.2.3.3.9 [MS-RDPEFS] */
 RD_NTSTATUS
 disk_set_information(RD_NTHANDLE handle, uint32 info_class, STREAM in, STREAM out)
 {
+	UNUSED(out);
 	uint32 length, file_attributes, ft_high, ft_low;
 	char *newname, fullpath[PATH_MAX];
 	struct fileinfo *pfinfo;
@@ -724,6 +750,9 @@ disk_set_information(RD_NTHANDLE handle, uint32 info_class, STREAM in, STREAM ou
 	time_t write_time, change_time, access_time, mod_time;
 	struct utimbuf tvs;
 	struct STATFS_T stat_fs;
+
+	logger(Disk, Debug, "disk_set_information(handle=0x%x, info_class=0x%x, ...)", handle,
+	       info_class);
 
 	pfinfo = &(g_fileinfo[handle]);
 	g_notify_stamp = True;
@@ -734,8 +763,8 @@ disk_set_information(RD_NTHANDLE handle, uint32 info_class, STREAM in, STREAM ou
 		case FileBasicInformation:
 			write_time = change_time = access_time = 0;
 
-			in_uint8s(in, 4);	/* Handle of root dir? */
-			in_uint8s(in, 24);	/* unknown */
+			in_uint8s(in, 4);	/* length of SetBuffer */
+			in_uint8s(in, 24);	/* padding */
 
 			/* CreationTime */
 			in_uint32_le(in, ft_low);
@@ -781,12 +810,9 @@ disk_set_information(RD_NTHANDLE handle, uint32 info_class, STREAM in, STREAM ou
 
 			if (access_time || write_time || change_time)
 			{
-#if WITH_DEBUG_RDP5
-				printf("FileBasicInformation access       time %s",
-				       ctime(&tvs.actime));
-				printf("FileBasicInformation modification time %s",
-				       ctime(&tvs.modtime));
-#endif
+				logger(Disk, Debug,
+				       "disk_set_information(), access time='%s', modify time='%s'",
+				       ctime(&tvs.actime), ctime(&tvs.modtime));
 				if (utime(pfinfo->path, &tvs) && errno != EPERM)
 					return RD_STATUS_ACCESS_DENIED;
 			}
@@ -802,9 +828,8 @@ disk_set_information(RD_NTHANDLE handle, uint32 info_class, STREAM in, STREAM ou
 				mode |= S_IWUSR;
 
 			mode &= 0777;
-#if WITH_DEBUG_RDP5
-			printf("FileBasicInformation set access mode 0%o", mode);
-#endif
+
+			logger(Disk, Debug, "disk_set_information(), access mode 0%o", mode);
 
 			if (fchmod(handle, mode))
 				return RD_STATUS_ACCESS_DENIED;
@@ -833,7 +858,8 @@ disk_set_information(RD_NTHANDLE handle, uint32 info_class, STREAM in, STREAM ou
 
 			if (rename(pfinfo->path, fullpath) != 0)
 			{
-				perror("rename");
+				logger(Disk, Error, "disk_set_information(), rename() failed: %s",
+				       strerror(errno));
 				return RD_STATUS_ACCESS_DENIED;
 			}
 			break;
@@ -915,8 +941,9 @@ disk_set_information(RD_NTHANDLE handle, uint32 info_class, STREAM in, STREAM ou
 
 			break;
 		default:
-
-			unimpl("IRP Set File Information class: 0x%x\n", info_class);
+			logger(Disk, Warning,
+			       "disk_set_information(), unhandled information class 0x%x",
+			       info_class);
 			return RD_STATUS_INVALID_PARAMETER;
 	}
 	return RD_STATUS_SUCCESS;
@@ -927,8 +954,9 @@ disk_check_notify(RD_NTHANDLE handle)
 {
 	struct fileinfo *pfinfo;
 	RD_NTSTATUS status = RD_STATUS_PENDING;
-
 	NOTIFY notify;
+
+	logger(Disk, Debug, "disk_check_notify(handle=0x%x)", handle);
 
 	pfinfo = &(g_fileinfo[handle]);
 	if (!pfinfo->pdir)
@@ -956,11 +984,10 @@ disk_check_notify(RD_NTHANDLE handle)
 RD_NTSTATUS
 disk_create_notify(RD_NTHANDLE handle, uint32 info_class)
 {
-
 	struct fileinfo *pfinfo;
 	RD_NTSTATUS ret = RD_STATUS_PENDING;
 
-	/* printf("start disk_create_notify info_class %X\n", info_class); */
+	logger(Disk, Debug, "disk_create_notify(handle=0x%x, info_class=0x%x)", handle, info_class);
 
 	pfinfo = &(g_fileinfo[handle]);
 	pfinfo->info_class = info_class;
@@ -983,6 +1010,7 @@ disk_create_notify(RD_NTHANDLE handle, uint32 info_class)
 static RD_NTSTATUS
 NotifyInfo(RD_NTHANDLE handle, uint32 info_class, NOTIFY * p)
 {
+	UNUSED(info_class);
 	struct fileinfo *pfinfo;
 	struct stat filestat;
 	struct dirent *dp;
@@ -992,7 +1020,7 @@ NotifyInfo(RD_NTHANDLE handle, uint32 info_class, NOTIFY * p)
 	pfinfo = &(g_fileinfo[handle]);
 	if (fstat(handle, &filestat) < 0)
 	{
-		perror("NotifyInfo");
+		logger(Disk, Error, "NotifyInfo(), fstat failed: %s", strerror(errno));
 		return RD_STATUS_ACCESS_DENIED;
 	}
 	p->modify_time = filestat.st_mtime;
@@ -1004,7 +1032,7 @@ NotifyInfo(RD_NTHANDLE handle, uint32 info_class, NOTIFY * p)
 	dpr = opendir(pfinfo->path);
 	if (!dpr)
 	{
-		perror("NotifyInfo");
+		logger(Disk, Error, "NotifyInfo(), opendir failed: %s", strerror(errno));
 		return RD_STATUS_ACCESS_DENIED;
 	}
 
@@ -1103,12 +1131,17 @@ disk_query_volume_information(RD_NTHANDLE handle, uint32 info_class, STREAM out)
 	struct STATFS_T stat_fs;
 	struct fileinfo *pfinfo;
 	FsInfoType *fsinfo;
+	STREAM stmp;
+
+	logger(Disk, Debug, "disk_query_volume_information(handle=0x%x, info_class=0x%x)", handle,
+	       info_class);
 
 	pfinfo = &(g_fileinfo[handle]);
 
 	if (STATFS_FN(pfinfo->path, &stat_fs) != 0)
 	{
-		perror("statfs");
+		logger(Disk, Error, "disk_query_volume_information(), statfs() failed: %s",
+		       strerror(errno));
 		return RD_STATUS_ACCESS_DENIED;
 	}
 
@@ -1117,46 +1150,47 @@ disk_query_volume_information(RD_NTHANDLE handle, uint32 info_class, STREAM out)
 	switch (info_class)
 	{
 		case FileFsVolumeInformation:
+			stmp = s_alloc(PATH_MAX * 4);
+			out_utf16s(stmp, fsinfo->label);
+			s_mark_end(stmp);
 
 			out_uint32_le(out, 0);	/* volume creation time low */
 			out_uint32_le(out, 0);	/* volume creation time high */
 			out_uint32_le(out, fsinfo->serial);	/* serial */
-
-			out_uint32_le(out, 2 * strlen(fsinfo->label));	/* length of string */
-
+			out_uint32_le(out, s_length(stmp));	/* length of string */
 			out_uint8(out, 0);	/* support objects? */
-			rdp_out_unistr(out, fsinfo->label, 2 * strlen(fsinfo->label) - 2);
+			out_stream(out, stmp);	/* fsinfo->label string */
+			s_free(stmp);
 			break;
 
 		case FileFsSizeInformation:
 
-			out_uint32_le(out, stat_fs.f_blocks);	/* Total allocation units low */
-			out_uint32_le(out, 0);	/* Total allocation high units */
-			out_uint32_le(out, stat_fs.f_bfree);	/* Available allocation units */
-			out_uint32_le(out, 0);	/* Available allowcation units */
+			out_uint64_le(out, stat_fs.f_blocks);	/* Total allocation units */
+			out_uint64_le(out, stat_fs.f_bfree);	/* Available allocation units */
 			out_uint32_le(out, stat_fs.f_bsize / 0x200);	/* Sectors per allocation unit */
 			out_uint32_le(out, 0x200);	/* Bytes per sector */
 			break;
 
 		case FileFsFullSizeInformation:
 
-			out_uint32_le(out, stat_fs.f_blocks);	/* Total allocation units low */
-			out_uint32_le(out, 0);	/* Total allocation units high */
-			out_uint32_le(out, stat_fs.f_bavail);	/* Caller allocation units low */
-			out_uint32_le(out, 0);	/* Caller allocation units high */
-			out_uint32_le(out, stat_fs.f_bfree);	/* Available allocation units */
-			out_uint32_le(out, 0);	/* Available allowcation units */
+			out_uint64_le(out, stat_fs.f_blocks);	/* Total allocation units */
+			out_uint64_le(out, stat_fs.f_bavail);	/* Caller allocation units */
+			out_uint64_le(out, stat_fs.f_bfree);	/* Available allocation units */
 			out_uint32_le(out, stat_fs.f_bsize / 0x200);	/* Sectors per allocation unit */
 			out_uint32_le(out, 0x200);	/* Bytes per sector */
 			break;
 
 		case FileFsAttributeInformation:
+			stmp = s_alloc(PATH_MAX * 4);
+			out_utf16s_no_eos(stmp, fsinfo->type);
+			s_mark_end(stmp);
 
 			out_uint32_le(out, FS_CASE_SENSITIVE | FS_CASE_IS_PRESERVED);	/* fs attributes */
 			out_uint32_le(out, F_NAMELEN(stat_fs));	/* max length of filename */
 
-			out_uint32_le(out, 2 * strlen(fsinfo->type));	/* length of fs_type */
-			rdp_out_unistr(out, fsinfo->type, 2 * strlen(fsinfo->type) - 2);
+			out_uint32_le(out, s_length(stmp));	/* length of fsinfo->type string */
+			out_stream(out, stmp);	/* fsinfo->typ string */
+			s_free(stmp);
 			break;
 
 		case FileFsLabelInformation:
@@ -1166,8 +1200,9 @@ disk_query_volume_information(RD_NTHANDLE handle, uint32 info_class, STREAM out)
 		case FileFsMaximumInformation:
 
 		default:
-
-			unimpl("IRP Query Volume Information class: 0x%x\n", info_class);
+			logger(Disk, Warning,
+			       "disk_query_volume_information(), unhandled volume info class 0x%x",
+			       info_class);
 			return RD_STATUS_INVALID_PARAMETER;
 	}
 	return RD_STATUS_SUCCESS;
@@ -1182,12 +1217,15 @@ disk_query_directory(RD_NTHANDLE handle, uint32 info_class, char *pattern, STREA
 	struct dirent *pdirent;
 	struct stat filestat;
 	struct fileinfo *pfinfo;
+	STREAM stmp;
+
+	logger(Disk, Debug, "disk_query_directory(handle=0x%x, info_class=0x%x, pattern=%s, ...)",
+	       handle, info_class, pattern);
 
 	pfinfo = &(g_fileinfo[handle]);
 	pdir = pfinfo->pdir;
 	dirname = pfinfo->path;
 	file_attributes = 0;
-
 
 	switch (info_class)
 	{
@@ -1227,7 +1265,9 @@ disk_query_directory(RD_NTHANDLE handle, uint32 info_class, char *pattern, STREA
 					default:
 						/* Fatal error. By returning STATUS_NO_SUCH_FILE, 
 						   the directory list operation will be aborted */
-						perror(fullpath);
+						logger(Disk, Error,
+						       "disk_query_directory(), stat() failed: %s",
+						       strerror(errno));
 						out_uint8(out, 0);
 						return RD_STATUS_NO_SUCH_FILE;
 				}
@@ -1248,9 +1288,16 @@ disk_query_directory(RD_NTHANDLE handle, uint32 info_class, char *pattern, STREA
 			break;
 
 		default:
-			unimpl("IRP Query Directory sub: 0x%x\n", info_class);
+			logger(Disk, Warning,
+			       "disk_query_directory(), unhandled directory info class 0x%x",
+			       info_class);
 			return RD_STATUS_INVALID_PARAMETER;
 	}
+
+	// Write entry name as utf16 into stmp
+	stmp = s_alloc(PATH_MAX * 4);
+	out_utf16s_no_eos(stmp, pdirent->d_name);
+	s_mark_end(stmp);
 
 	switch (info_class)
 	{
@@ -1273,19 +1320,14 @@ disk_query_directory(RD_NTHANDLE handle, uint32 info_class, char *pattern, STREA
 			out_uint32_le(out, ft_low);	/* change_write_time */
 			out_uint32_le(out, ft_high);
 
-			out_uint32_le(out, filestat.st_size);	/* filesize low */
-			out_uint32_le(out, 0);	/* filesize high */
-			out_uint32_le(out, filestat.st_size);	/* filesize low */
-			out_uint32_le(out, 0);	/* filesize high */
+			out_uint64_le(out, filestat.st_size);	/* filesize */
+			out_uint64_le(out, filestat.st_size);	/* filesize */
 			out_uint32_le(out, file_attributes);	/* FileAttributes */
-			out_uint32_le(out, 2 * strlen(pdirent->d_name) + 2);	/* unicode length */
+			out_uint32_le(out, s_length(stmp));	/* length of dir entry name string */
 			out_uint32_le(out, 0);	/* EaSize */
 			out_uint8(out, 0);	/* ShortNameLength */
-			/* this should be correct according to MS-FSCC specification
-			   but it only works when commented out... */
-			/* out_uint8(out, 0); *//* Reserved/Padding */
-			out_uint8s(out, 2 * 12);	/* ShortName (8.3 name) */
-			rdp_out_unistr(out, pdirent->d_name, 2 * strlen(pdirent->d_name));
+			out_uint8s(out, 24);	/* ShortName (8.3 name) */
+			out_stream(out, stmp);	/* dir entry name string */
 			break;
 
 
@@ -1308,13 +1350,11 @@ disk_query_directory(RD_NTHANDLE handle, uint32 info_class, char *pattern, STREA
 			out_uint32_le(out, ft_low);	/* change_write_time */
 			out_uint32_le(out, ft_high);
 
-			out_uint32_le(out, filestat.st_size);	/* filesize low */
-			out_uint32_le(out, 0);	/* filesize high */
-			out_uint32_le(out, filestat.st_size);	/* filesize low */
-			out_uint32_le(out, 0);	/* filesize high */
+			out_uint64_le(out, filestat.st_size);	/* filesize */
+			out_uint64_le(out, filestat.st_size);	/* filesize */
 			out_uint32_le(out, file_attributes);
-			out_uint32_le(out, 2 * strlen(pdirent->d_name) + 2);	/* unicode length */
-			rdp_out_unistr(out, pdirent->d_name, 2 * strlen(pdirent->d_name));
+			out_uint32_le(out, s_length(stmp));	/* dir entry name string length */
+			out_stream(out, stmp);	/* dir entry name */
 			break;
 
 
@@ -1337,29 +1377,31 @@ disk_query_directory(RD_NTHANDLE handle, uint32 info_class, char *pattern, STREA
 			out_uint32_le(out, ft_low);	/* change_write_time */
 			out_uint32_le(out, ft_high);
 
-			out_uint32_le(out, filestat.st_size);	/* filesize low */
-			out_uint32_le(out, 0);	/* filesize high */
-			out_uint32_le(out, filestat.st_size);	/* filesize low */
-			out_uint32_le(out, 0);	/* filesize high */
+			out_uint64_le(out, filestat.st_size);	/* filesize */
+			out_uint64_le(out, filestat.st_size);	/* filesize */
 			out_uint32_le(out, file_attributes);
-			out_uint32_le(out, 2 * strlen(pdirent->d_name) + 2);	/* unicode length */
+			out_uint32_le(out, s_length(stmp));	/* dir entry name string length */
 			out_uint32_le(out, 0);	/* EaSize */
-			rdp_out_unistr(out, pdirent->d_name, 2 * strlen(pdirent->d_name));
+			out_stream(out, stmp);	/* dir entry name */
 			break;
 
 
 		case FileNamesInformation:
 
-			out_uint32_le(out, 2 * strlen(pdirent->d_name) + 2);	/* unicode length */
-			rdp_out_unistr(out, pdirent->d_name, 2 * strlen(pdirent->d_name));
+			out_uint32_le(out, s_length(stmp));	/* dir entry name string length */
+			out_stream(out, stmp);	/* dir entry name */
 			break;
 
 
 		default:
-
-			unimpl("IRP Query Directory sub: 0x%x\n", info_class);
+			logger(Disk, Warning,
+			       "disk_query_directory(), unhandled directory info class 0x%x",
+			       info_class);
+			s_free(stmp);
 			return RD_STATUS_INVALID_PARAMETER;
 	}
+
+	s_free(stmp);
 
 	return RD_STATUS_SUCCESS;
 }
@@ -1369,6 +1411,10 @@ disk_query_directory(RD_NTHANDLE handle, uint32 info_class, char *pattern, STREA
 static RD_NTSTATUS
 disk_device_control(RD_NTHANDLE handle, uint32 request, STREAM in, STREAM out)
 {
+	UNUSED(in);
+	UNUSED(out);
+
+	logger(Disk, Debug, "disk_device_control(handle=0x%x, request=0x%x, ...)", handle, request);
 	if (((request >> 16) != 20) || ((request >> 16) != 9))
 		return RD_STATUS_INVALID_PARAMETER;
 
@@ -1376,14 +1422,13 @@ disk_device_control(RD_NTHANDLE handle, uint32 request, STREAM in, STREAM out)
 	request >>= 2;
 	request &= 0xfff;
 
-	printf("DISK IOCTL %d\n", request);
-
 	switch (request)
 	{
 		case 25:	/* ? */
 		case 42:	/* ? */
 		default:
-			unimpl("DISK IOCTL %d\n", request);
+			logger(Disk, Warning, "disk_device_control(), unhandled disk ioctl %d",
+			       request);
 			return RD_STATUS_INVALID_PARAMETER;
 	}
 

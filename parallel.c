@@ -35,7 +35,7 @@ extern RDPDR_DEVICE g_rdpdr_device[];
 
 
 /* Enumeration of devices from rdesktop.c        */
-/* returns numer of units found and initialized. */
+/* returns number of units found and initialized. */
 /* optarg looks like ':LPT1=/dev/lp0'            */
 /* when it arrives to this function.             */
 int
@@ -60,7 +60,7 @@ parallel_enum_devices(uint32 * id, char *optarg)
 
 		g_rdpdr_device[*id].local_path = xmalloc(strlen(pos2) + 1);
 		strcpy(g_rdpdr_device[*id].local_path, pos2);
-		printf("PARALLEL %s to %s\n", optarg, pos2);
+		logger(Core, Debug, "parallel_enum_devices(), %s to %s", optarg, pos2);
 
 		/* set device type */
 		g_rdpdr_device[*id].device_type = DEVICE_TYPE_PARALLEL;
@@ -78,18 +78,23 @@ static RD_NTSTATUS
 parallel_create(uint32 device_id, uint32 access, uint32 share_mode, uint32 disposition,
 		uint32 flags, char *filename, RD_NTHANDLE * handle)
 {
+	UNUSED(access);
+	UNUSED(share_mode);
+	UNUSED(disposition);
+	UNUSED(flags);
+	UNUSED(filename);
 	int parallel_fd;
 
 	parallel_fd = open(g_rdpdr_device[device_id].local_path, O_RDWR);
 	if (parallel_fd == -1)
 	{
-		perror("open");
+		logger(Core, Error, "parallel_create(), open failed: %s", strerror(errno));
 		return RD_STATUS_ACCESS_DENIED;
 	}
 
 	/* all read and writes should be non blocking */
 	if (fcntl(parallel_fd, F_SETFL, O_NONBLOCK) == -1)
-		perror("fcntl");
+		logger(Core, Error, "parallel_create(), fcntl failed: %s", strerror(errno));
 
 #if defined(LPABORT)
 	/* Retry on errors */
@@ -114,15 +119,17 @@ parallel_close(RD_NTHANDLE handle)
 }
 
 static RD_NTSTATUS
-parallel_read(RD_NTHANDLE handle, uint8 * data, uint32 length, uint32 offset, uint32 * result)
+parallel_read(RD_NTHANDLE handle, uint8 * data, uint32 length, uint64 offset, uint32 * result)
 {
+	UNUSED(offset);  /* Offset must always be zero according to MS-RDPESP */
 	*result = read(handle, data, length);
 	return RD_STATUS_SUCCESS;
 }
 
 static RD_NTSTATUS
-parallel_write(RD_NTHANDLE handle, uint8 * data, uint32 length, uint32 offset, uint32 * result)
+parallel_write(RD_NTHANDLE handle, uint8 * data, uint32 length, uint64 offset, uint32 * result)
 {
+	UNUSED(offset);  /* Offset must always be zero according to MS-RDPESP */
 	int rc = RD_STATUS_SUCCESS;
 
 	int n = write(handle, data, length);
@@ -137,18 +144,21 @@ parallel_write(RD_NTHANDLE handle, uint8 * data, uint32 length, uint32 offset, u
 		{
 			case EAGAIN:
 				rc = RD_STATUS_DEVICE_OFF_LINE;
+				break;
 			case ENOSPC:
 				rc = RD_STATUS_DEVICE_PAPER_EMPTY;
+				break;
 			case EIO:
 				rc = RD_STATUS_DEVICE_OFF_LINE;
+				break;
 			default:
 				rc = RD_STATUS_DEVICE_POWERED_OFF;
+				break;
 		}
 #if defined(LPGETSTATUS)
 		if (ioctl(handle, LPGETSTATUS, &status) == 0)
 		{
-			/* coming soon: take care for the printer status */
-			printf("parallel_write: status = %d, errno = %d\n", status, errno);
+			logger(Core, Error, "parellel_write(), ioctl failed: %s", strerror(errno));
 		}
 #endif
 	}
@@ -159,6 +169,9 @@ parallel_write(RD_NTHANDLE handle, uint8 * data, uint32 length, uint32 offset, u
 static RD_NTSTATUS
 parallel_device_control(RD_NTHANDLE handle, uint32 request, STREAM in, STREAM out)
 {
+	UNUSED(handle);
+	UNUSED(in);
+	UNUSED(out);
 	if ((request >> 16) != FILE_DEVICE_PARALLEL)
 		return RD_STATUS_INVALID_PARAMETER;
 
@@ -166,16 +179,15 @@ parallel_device_control(RD_NTHANDLE handle, uint32 request, STREAM in, STREAM ou
 	request >>= 2;
 	request &= 0xfff;
 
-	printf("PARALLEL IOCTL %d: ", request);
+	logger(Protocol, Debug, "parallel_device_control(), ioctl %d", request);
 
 	switch (request)
 	{
 		case IOCTL_PAR_QUERY_RAW_DEVICE_ID:
 
 		default:
-
-			printf("\n");
-			unimpl("UNKNOWN IOCTL %d\n", request);
+			logger(Protocol, Warning, "parallel_device_control(), unhandled ioctl %d",
+			       request);
 	}
 	return RD_STATUS_SUCCESS;
 }

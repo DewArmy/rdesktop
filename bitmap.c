@@ -17,8 +17,8 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-/* three seperate function for speed when decompressing the bitmaps
-   when modifing one function make the change in the others
+/* three separate function for speed when decompressing the bitmaps
+   when modifying one function make the change in the others
    jay.sorg@gmail.com */
 
 /* indent is confused by this file */
@@ -135,6 +135,8 @@ bitmap_decompress1(uint8 * output, int width, int height, uint8 * input, int siz
 				break;
 			case 8:	/* Bicolour */
 				colour1 = CVAL(input);
+				colour2 = CVAL(input);
+				break;
 			case 3:	/* Colour */
 				colour2 = CVAL(input);
 				break;
@@ -252,7 +254,7 @@ bitmap_decompress1(uint8 * output, int width, int height, uint8 * input, int siz
 					REPEAT(line[x] = 0)
 					break;
 				default:
-					unimpl("bitmap opcode 0x%x\n", opcode);
+					logger(Core, Warning, "bitmap_decompress(), unhandled bitmap opcode 0x%x", opcode);
 					return False;
 			}
 		}
@@ -333,6 +335,8 @@ bitmap_decompress2(uint8 * output, int width, int height, uint8 * input, int siz
 				break;
 			case 8:	/* Bicolour */
 				CVAL2(input, colour1);
+				CVAL2(input, colour2);
+				break;
 			case 3:	/* Colour */
 				CVAL2(input, colour2);
 				break;
@@ -451,7 +455,7 @@ bitmap_decompress2(uint8 * output, int width, int height, uint8 * input, int siz
 					REPEAT(line[x] = 0)
 					break;
 				default:
-					unimpl("bitmap opcode 0x%x\n", opcode);
+					logger(Core, Warning, "bitmap_decompress2(), unhandled bitmap opcode 0x%x", opcode);
 					return False;
 			}
 		}
@@ -535,6 +539,10 @@ bitmap_decompress3(uint8 * output, int width, int height, uint8 * input, int siz
 				colour1[0] = CVAL(input);
 				colour1[1] = CVAL(input);
 				colour1[2] = CVAL(input);
+				colour2[0] = CVAL(input);
+				colour2[1] = CVAL(input);
+				colour2[2] = CVAL(input);
+				break;
 			case 3:	/* Colour */
 				colour2[0] = CVAL(input);
 				colour2[1] = CVAL(input);
@@ -737,7 +745,7 @@ bitmap_decompress3(uint8 * output, int width, int height, uint8 * input, int siz
 					)
 					break;
 				default:
-					unimpl("bitmap opcode 0x%x\n", opcode);
+					logger(Core, Warning, "bitmap_decompress3(), unhandled bitmap opcode 0x%x", opcode);
 					return False;
 			}
 		}
@@ -749,6 +757,7 @@ bitmap_decompress3(uint8 * output, int width, int height, uint8 * input, int siz
 static int
 process_plane(uint8 * in, int width, int height, uint8 * out, int size)
 {
+	UNUSED(size);
 	int indexw;
 	int indexh;
 	int code;
@@ -785,7 +794,7 @@ process_plane(uint8 * in, int width, int height, uint8 * out, int size)
 					replen = revcode;
 					collen = 0;
 				}
-				while (collen > 0)
+				while (indexw < width && collen > 0)
 				{
 					color = CVAL(in);
 					*out = color;
@@ -793,7 +802,7 @@ process_plane(uint8 * in, int width, int height, uint8 * out, int size)
 					indexw++;
 					collen--;
 				}
-				while (replen > 0)
+				while (indexw < width && replen > 0)
 				{
 					*out = color;
 					out += 4;
@@ -815,7 +824,7 @@ process_plane(uint8 * in, int width, int height, uint8 * out, int size)
 					replen = revcode;
 					collen = 0;
 				}
-				while (collen > 0)
+				while (indexw < width && collen > 0)
 				{
 					x = CVAL(in);
 					if (x & 1)
@@ -835,7 +844,7 @@ process_plane(uint8 * in, int width, int height, uint8 * out, int size)
 					indexw++;
 					collen--;
 				}
-				while (replen > 0)
+				while (indexw < width && replen > 0)
 				{
 					x = last_line[indexw * 4] + color;
 					*out = x;
@@ -900,7 +909,7 @@ bitmap_decompress(uint8 * output, int width, int height, uint8 * input, int size
 			rv = bitmap_decompress4(output, width, height, input, size);
 			break;
 		default:
-			unimpl("Bpp %d\n", Bpp);
+			logger(Core, Debug, "bitmap_decompress(), unhandled BPP %d", Bpp);
 			break;
 	}
 	return rv;

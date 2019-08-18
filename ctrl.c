@@ -1,7 +1,7 @@
 /* -*- c-basic-offset: 8 -*-
    rdesktop: A Remote Desktop Protocol client.
    Master/Slave remote controlling
-   Copyright 2013 Henrik Andersson <hean01@cendio.se> for Cendio AB
+   Copyright 2013-2017 Henrik Andersson <hean01@cendio.se> for Cendio AB
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -25,6 +25,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <errno.h>
 #include <limits.h>
 #include <unistd.h>
 
@@ -39,6 +40,7 @@
 
 extern RD_BOOL g_seamless_rdp;
 extern uint8 g_static_rdesktop_salt_16[];
+extern char g_codepage[16];
 
 static RD_BOOL _ctrl_is_slave;
 static int ctrlsock;
@@ -80,7 +82,7 @@ _ctrl_slave_new(int sock)
 	}
 	else
 	{
-		/* no elemnts in list, lets add first */
+		/* no elements in list, lets add first */
 		_ctrl_slaves = ns;
 	}
 }
@@ -185,7 +187,8 @@ _ctrl_verify_unix_socket()
 
 	if ((s = socket(AF_UNIX, SOCK_STREAM, 0)) < 0)
 	{
-		perror("Error creating ctrl client socket: socket()");
+		logger(Core, Error, "_ctrl_verify_unix_socket(), socket() failed: %s",
+		       strerror(errno));
 		exit(1);
 	}
 
@@ -273,7 +276,7 @@ ctrl_init(const char *user, const char *domain, const char *host)
 	path[sizeof(path) - 1] = '\0';
 	if (utils_mkdir_p(path, 0700) == -1)
 	{
-		perror(path);
+		logger(Core, Error, "ctrl_init(), utils_mkdir_p() failed: %s", strerror(errno));
 		return -1;
 	}
 
@@ -295,7 +298,7 @@ ctrl_init(const char *user, const char *domain, const char *host)
 	/* setup ctrl socket and start listening for connections */
 	if ((ctrlsock = socket(AF_UNIX, SOCK_STREAM, 0)) < 0)
 	{
-		perror("Error creating ctrl socket:");
+		logger(Core, Error, "ctrl_init(), socket() failed: %s", strerror(errno));
 		exit(1);
 	}
 
@@ -305,13 +308,13 @@ ctrl_init(const char *user, const char *domain, const char *host)
 	strncpy(saun.sun_path, ctrlsock_name, sizeof(saun.sun_path));
 	if (bind(ctrlsock, (struct sockaddr *) &saun, sizeof(struct sockaddr_un)) < 0)
 	{
-		perror("Error binding ctrl socket:");
+		logger(Core, Error, "ctrl_init(), bind() failed: %s", strerror(errno));
 		exit(1);
 	}
 
 	if (listen(ctrlsock, 5) < 0)
 	{
-		perror("Error listening on socket:");
+		logger(Core, Error, "ctrl_init(), listen() failed: %s", strerror(errno));
 		exit(1);
 	}
 
@@ -362,6 +365,7 @@ ctrl_add_fds(int *n, fd_set * rfds)
 void
 ctrl_check_fds(fd_set * rfds, fd_set * wfds)
 {
+	UNUSED(wfds);
 	int ns, res, offs;
 	struct sockaddr_un fsaun;
 	socklen_t fromlen;
@@ -380,7 +384,8 @@ ctrl_check_fds(fd_set * rfds, fd_set * wfds)
 		ns = accept(ctrlsock, (struct sockaddr *) &fsaun, &fromlen);
 		if (ns < 0)
 		{
-			perror("server: accept()");
+			logger(Core, Error, "ctrl_check_fds(), accept() failed: %s",
+			       strerror(errno));
 			exit(1);
 		}
 
@@ -422,7 +427,7 @@ ctrl_check_fds(fd_set * rfds, fd_set * wfds)
 					p = strchr(p + 1, '\n');
 				}
 
-				/* If we havent found an nonescaped \n we need more data */
+				/* If we haven't found a nonescaped \n we need more data */
 				if (p == NULL)
 					continue;
 
@@ -442,10 +447,6 @@ ctrl_check_fds(fd_set * rfds, fd_set * wfds)
 	}
 }
 
-#if HAVE_ICONV
-extern char g_codepage[16];
-#endif
-
 int
 ctrl_send_command(const char *cmd, const char *arg)
 {
@@ -462,7 +463,7 @@ ctrl_send_command(const char *cmd, const char *arg)
 
 	if ((s = socket(AF_UNIX, SOCK_STREAM, 0)) < 0)
 	{
-		perror("Error creating ctrl client socket: socket()");
+		logger(Core, Error, "ctrl_send_command(), socket() failed: %s", strerror(errno));
 		exit(1);
 	}
 
@@ -473,7 +474,7 @@ ctrl_send_command(const char *cmd, const char *arg)
 
 	if (connect(s, (struct sockaddr *) &saun, len) < 0)
 	{
-		perror("Error connecting to ctrl socket: connect()");
+		logger(Core, Error, "ctrl_send_command(), connect() failed: %s", strerror(errno));
 		exit(1);
 	}
 
@@ -484,12 +485,12 @@ ctrl_send_command(const char *cmd, const char *arg)
 	if (ret != 0)
 		goto bail_out;
 
-	/* escape the utf-8 string */
+	/* escape the UTF-8 string */
 	escaped = utils_string_escape(tmp);
 	if ((strlen(escaped) + 1) > CTRL_LINEBUF_SIZE - 1)
 		goto bail_out;
 
-	/* send escaped utf-8 command to master */
+	/* send escaped UTF-8 command to master */
 	send(s, escaped, strlen(escaped), 0);
 	send(s, "\n", 1, 0);
 

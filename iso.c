@@ -3,7 +3,7 @@
    Protocol services - ISO layer
    Copyright (C) Matthew Chapman <matthewc.unsw.edu.au> 1999-2008
    Copyright 2005-2011 Peter Astrand <astrand@cendio.se> for Cendio AB
-   Copyright 2012 Henrik Andersson <hean01@cendio.se> for Cendio AB
+   Copyright 2012-2018 Henrik Andersson <hean01@cendio.se> for Cendio AB
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -32,6 +32,7 @@ extern char *g_sc_csp_name;
 extern char *g_sc_reader_name;
 extern char *g_sc_card_name;
 extern char *g_sc_container_name;
+extern char g_tls_version[];
 
 
 /* Send a self-contained ISO PDU */
@@ -54,6 +55,7 @@ iso_send_msg(uint8 code)
 
 	s_mark_end(s);
 	tcp_send(s);
+	s_free(s);
 }
 
 static void
@@ -77,15 +79,15 @@ iso_send_connection_request(char *username, uint32 neg_proto)
 	out_uint16(s, 0);	/* src_ref */
 	out_uint8(s, 0);	/* class */
 
-	out_uint8p(s, "Cookie: mstshash=", strlen("Cookie: mstshash="));
-	out_uint8p(s, username, strlen(username));
+	out_uint8a(s, "Cookie: mstshash=", strlen("Cookie: mstshash="));
+	out_uint8a(s, username, strlen(username));
 
 	out_uint8(s, 0x0d);	/* cookie termination string: CR+LF */
 	out_uint8(s, 0x0a);
 
 	if (g_rdp_version >= RDP_V5 && g_negotiate_rdp_protocol)
 	{
-		/* optional rdp protocol negotiation request for RDPv5 */
+		/* optional RDP protocol negotiation request for RDPv5 */
 		out_uint8(s, RDP_NEG_REQ);
 		out_uint8(s, 0);
 		out_uint16(s, 8);
@@ -94,11 +96,12 @@ iso_send_connection_request(char *username, uint32 neg_proto)
 
 	s_mark_end(s);
 	tcp_send(s);
+	s_free(s);
 }
 
 /* Receive a message on the ISO layer, return code */
 static STREAM
-iso_recv_msg(uint8 * code, uint8 * rdpver)
+iso_recv_msg(uint8 * code, RD_BOOL * is_fastpath, uint8 * fastpath_hdr)
 {
 	STREAM s;
 	uint16 length;
@@ -107,33 +110,45 @@ iso_recv_msg(uint8 * code, uint8 * rdpver)
 	s = tcp_recv(NULL, 4);
 	if (s == NULL)
 		return NULL;
-	in_uint8(s, version);
-	if (rdpver != NULL)
-		*rdpver = version;
-	if (version == 3)
+
+	in_uint8(s, version);	/* T.123 version or Fastpath output header */
+
+	/* detect if this is a slow or fast path PDU */
+	*fastpath_hdr = 0x00;
+	*is_fastpath = False;
+	if (version == T123_HEADER_VERSION)
 	{
-		in_uint8s(s, 1);	/* pad */
-		in_uint16_be(s, length);
+		in_uint8s(s, 1);	/* reserved */
+		in_uint16_be(s, length);	/* length */
 	}
 	else
 	{
-		in_uint8(s, length);
+		/* if version is not an expected T.123 version eg. 3, then this
+		   stream is a fast path pdu */
+		*is_fastpath = True;
+		*fastpath_hdr = version;
+		in_uint8(s, length);	/* length1 */
 		if (length & 0x80)
 		{
+			/* length2 is only present if the most significant bit of length1 is set */
 			length &= ~0x80;
 			next_be(s, length);
 		}
 	}
+
 	if (length < 4)
 	{
-		error("Bad packet header\n");
+		logger(Protocol, Error, "iso_recv_msg(), bad packet header, length < 4");
 		return NULL;
 	}
+
 	s = tcp_recv(s, length - 4);
 	if (s == NULL)
 		return NULL;
-	if (version != 3)
+
+	if (*is_fastpath == True)
 		return s;
+
 	in_uint8s(s, 1);	/* hdrlen */
 	in_uint8(s, *code);
 	if (*code == ISO_PDU_DT)
@@ -164,9 +179,9 @@ iso_send(STREAM s)
 	uint16 length;
 
 	s_pop_layer(s, iso_hdr);
-	length = s->end - s->p;
+	length = s_remaining(s);
 
-	out_uint8(s, 3);	/* version */
+	out_uint8(s, T123_HEADER_VERSION);	/* version */
 	out_uint8(s, 0);	/* reserved */
 	out_uint16_be(s, length);
 
@@ -179,23 +194,38 @@ iso_send(STREAM s)
 
 /* Receive ISO transport data packet */
 STREAM
-iso_recv(uint8 * rdpver)
+iso_recv(RD_BOOL * is_fastpath, uint8 * fastpath_hdr)
 {
 	STREAM s;
 	uint8 code = 0;
 
-	s = iso_recv_msg(&code, rdpver);
+	s = iso_recv_msg(&code, is_fastpath, fastpath_hdr);
 	if (s == NULL)
 		return NULL;
-	if (rdpver != NULL)
-		if (*rdpver != 3)
-			return s;
+
+	if (*is_fastpath == True)
+		return s;
+
 	if (code != ISO_PDU_DT)
 	{
-		error("expected DT, got 0x%x\n", code);
+		logger(Protocol, Error, "iso_recv(), expected ISO_PDU_DT, got 0x%x", code);
 		return NULL;
 	}
 	return s;
+}
+
+
+/* try to setup a more helpful error message about TLS */
+char *get_credSSP_reason(uint32 neg_proto)
+{
+static char msg[256];
+
+strcat(msg, "CredSSP required by server");
+if ((neg_proto & PROTOCOL_SSL) &&
+    ( (g_tls_version[0] == 0) ||
+         (strcmp(g_tls_version, "1.2") < 0)))
+    strcat(msg, " (check if server has disabled old TLS versions, if yes use -V option)");
+return msg;
 }
 
 /* Establish a connection up to the ISO layer */
@@ -203,9 +233,12 @@ RD_BOOL
 iso_connect(char *server, char *username, char *domain, char *password,
 	    RD_BOOL reconnect, uint32 * selected_protocol)
 {
+	UNUSED(reconnect);
 	STREAM s;
 	uint8 code;
 	uint32 neg_proto;
+	RD_BOOL is_fastpath;
+	uint8 fastpath_hdr;
 
 	g_negotiate_rdp_protocol = True;
 
@@ -217,8 +250,13 @@ iso_connect(char *server, char *username, char *domain, char *password,
 	else if (g_sc_csp_name || g_sc_reader_name || g_sc_card_name || g_sc_container_name)
 		neg_proto |= PROTOCOL_HYBRID;
 	else
-		warning("Disables CredSSP due to missing smartcard information for SSO.\n");
+		logger(Core, Warning,
+		       "iso_connect(), missing smartcard information for SSO, disabling CredSSP");
 #endif
+	if (neg_proto & PROTOCOL_HYBRID)
+		logger(Core, Verbose, "Connecting to server using NLA...");
+	else
+		logger(Core, Verbose, "Connecting to server using SSL...");
 
       retry:
 	*selected_protocol = PROTOCOL_RDP;
@@ -229,13 +267,13 @@ iso_connect(char *server, char *username, char *domain, char *password,
 
 	iso_send_connection_request(username, neg_proto);
 
-	s = iso_recv_msg(&code, NULL);
+	s = iso_recv_msg(&code, &is_fastpath, &fastpath_hdr);
 	if (s == NULL)
 		return False;
 
 	if (code != ISO_PDU_CC)
 	{
-		error("expected CC, got 0x%x\n", code);
+		logger(Protocol, Error, "iso_connect(), expected ISO_PDU_CC, got 0x%x", code);
 		tcp_disconnect();
 		return False;
 	}
@@ -245,13 +283,12 @@ iso_connect(char *server, char *username, char *domain, char *password,
 		/* handle RDP_NEG_REQ response */
 		const char *reason = NULL;
 
-		uint8 type = 0, flags = 0;
-		uint16 length = 0;
+		uint8 type = 0;
 		uint32 data = 0;
 
 		in_uint8(s, type);
-		in_uint8(s, flags);
-		in_uint16(s, length);
+		in_uint8s(s, 1);	/* skip flags */
+		in_uint8s(s, 2);	/* skip length */
 		in_uint32(s, data);
 
 		if (type == RDP_NEG_FAILURE)
@@ -278,7 +315,7 @@ iso_connect(char *server, char *username, char *domain, char *password,
 					reason = "SSL required by server";
 					break;
 				case HYBRID_REQUIRED_BY_SERVER:
-					reason = "CredSSP required by server";
+					reason = get_credSSP_reason(neg_proto);
 					break;
 				default:
 					reason = "unknown reason";
@@ -288,20 +325,27 @@ iso_connect(char *server, char *username, char *domain, char *password,
 
 			if (retry_without_neg)
 			{
-				fprintf(stderr,
-					"Failed to negotiate protocol, retrying with plain RDP.\n");
+				if (reason != NULL)
+				{
+					logger(Protocol, Warning,
+					       "Protocol negotiation failed with reason: %s",
+					       reason);
+				}
+
+				logger(Core, Notice, "Retrying with plain RDP.");
 				g_negotiate_rdp_protocol = False;
 				goto retry;
 			}
 
-			fprintf(stderr, "Failed to connect, %s.\n", reason);
+			logger(Core, Notice, "Failed to connect, %s.\n", reason);
 			return False;
 		}
 
 		if (type != RDP_NEG_RSP)
 		{
 			tcp_disconnect();
-			error("Expected RDP_NEG_RSP, got type = 0x%x\n", type);
+			logger(Protocol, Error, "iso_connect(), expected RDP_NEG_RSP, got 0x%x",
+			       type);
 			return False;
 		}
 
@@ -311,13 +355,15 @@ iso_connect(char *server, char *username, char *domain, char *password,
 			if (!tcp_tls_connect())
 			{
 				/* failed to connect using cssp, let retry with plain TLS */
+				logger(Core, Verbose,
+				       "Failed to connect using SSL, trying with plain RDP.");
 				tcp_disconnect();
 				neg_proto = PROTOCOL_RDP;
 				goto retry;
 			}
 			/* do not use encryption when using TLS */
 			g_encryption = False;
-			fprintf(stderr, "Connection established using SSL.\n");
+			logger(Core, Notice, "Connection established using SSL.");
 		}
 #ifdef WITH_CREDSSP
 		else if (data == PROTOCOL_HYBRID)
@@ -325,25 +371,28 @@ iso_connect(char *server, char *username, char *domain, char *password,
 			if (!cssp_connect(server, username, domain, password, s))
 			{
 				/* failed to connect using cssp, let retry with plain TLS */
+				logger(Core, Verbose,
+				       "Failed to connect using NLA, trying with SSL");
 				tcp_disconnect();
 				neg_proto = PROTOCOL_SSL;
 				goto retry;
 			}
 
 			/* do not use encryption when using TLS */
-			fprintf(stderr, "Connection established using CredSSP.\n");
+			logger(Core, Notice, "Connection established using CredSSP.");
 			g_encryption = False;
 		}
 #endif
 		else if (data == PROTOCOL_RDP)
 		{
-			fprintf(stderr, "Connection established using plain RDP.\n");
+			logger(Core, Notice, "Connection established using plain RDP.");
 		}
 		else if (data != PROTOCOL_RDP)
 		{
 			tcp_disconnect();
-			error("Unexpected protocol in negotiation response, got data = 0x%x.\n",
-			      data);
+			logger(Protocol, Error,
+			       "iso_connect(), unexpected protocol in negotiation response, got 0x%x",
+			       data);
 			return False;
 		}
 

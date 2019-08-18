@@ -27,7 +27,7 @@
 
 /* Contacts:                                */
 
-/* hifn contact mentioned in the faq is     */
+/* hifn contact mentioned in the FAQ is     */
 /* Robert Friend rfriend at hifn dot com    */
 
 /* if you have questions regarding MPPC     */
@@ -41,7 +41,7 @@
 
 /* Algorithm: */
 
-/* as the rfc states the algorithm seems to */
+/* as the RFC states the algorithm seems to */
 /* be LZ77 with a sliding buffer            */
 /* that is empty at init.                   */
 
@@ -349,9 +349,9 @@ mppc_expand(uint8 * data, uint32 clen, uint8 ctype, uint32 * roff, uint32 * rlen
 			}
 
 			match_bits = match_len;
-			match_len =
-				((walker >> (32 - match_bits)) & (~(-1 << match_bits))) | (1 <<
-											   match_bits);
+			match_len = (walker >> (32 - match_bits));
+			match_len &= ((1 << match_bits) - 1);
+			match_len |= (1 << match_bits);
 			walker <<= match_bits;
 			walker_len -= match_bits;
 		}

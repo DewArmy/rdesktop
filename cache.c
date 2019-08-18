@@ -31,9 +31,9 @@ extern int g_pstcache_fd[];
 #define IS_SET(idx) (idx >= 0)
 
 /*
- * TODO: Test for optimal value of BUMP_COUNT. TO_TOP gives lowest cpu utilisation but using
+ * TODO: Test for optimal value of BUMP_COUNT. TO_TOP gives lowest CPU utilisation but using
  * a positive value will hopefully result in less frequently used bitmaps having a greater chance
- * of being evicted from the cache, and therby reducing the need to load bitmaps from disk.
+ * of being evicted from the cache, and thereby reducing the need to load bitmaps from disk.
  * (Jeroen)
  */
 #define BUMP_COUNT 40
@@ -93,8 +93,9 @@ cache_rebuild_bmpcache_linked_list(uint8 id, sint16 * idx, int count)
 
 	if (c != g_bmpcache_count[id])
 	{
-		error("Oops. %d in bitmap cache linked list, %d in ui cache...\n", c,
-		      g_bmpcache_count[id]);
+		logger(Core, Error,
+		       "cache_rebuild_bmpcache_linked_list(), %d in bitmap cache linked list, %d in ui cache...",
+		       c, g_bmpcache_count[id]);
 		exit(EX_SOFTWARE);
 	}
 }
@@ -111,7 +112,7 @@ cache_bump_bitmap(uint8 id, uint16 idx, int bump)
 	if (g_bmpcache_mru[id] == idx)
 		return;
 
-	DEBUG_RDP5(("bump bitmap: id=%d, idx=%d, bump=%d\n", id, idx, bump));
+	logger(Core, Debug, "cache_bump_bitmap(), id=%d, idx=%d, bump=%d", id, idx, bump);
 
 	n_idx = g_bmpcache[id][idx].next;
 	p_idx = g_bmpcache[id][idx].previous;
@@ -177,8 +178,9 @@ cache_evict_bitmap(uint8 id)
 
 	idx = g_bmpcache_lru[id];
 	n_idx = g_bmpcache[id][idx].next;
-	DEBUG_RDP5(("evict bitmap: id=%d idx=%d n_idx=%d bmp=%p\n", id, idx, n_idx,
-		    g_bmpcache[id][idx].bitmap));
+
+	logger(Core, Debug, "cache_evict_bitmap(), id=%d idx=%d n_idx=%d bmp=%p", id, idx, n_idx,
+	       g_bmpcache[id][idx].bitmap);
 
 	ui_destroy_bitmap(g_bmpcache[id][idx].bitmap);
 	--g_bmpcache_count[id];
@@ -209,7 +211,8 @@ cache_get_bitmap(uint8 id, uint16 idx)
 		return g_volatile_bc[id];
 	}
 
-	error("get bitmap %d:%d\n", id, idx);
+	logger(Core, Debug, "cache_get_bitmap(), id=%d, idx=%d", id, idx);
+
 	return NULL;
 }
 
@@ -245,7 +248,7 @@ cache_put_bitmap(uint8 id, uint16 idx, RD_HBITMAP bitmap)
 	}
 	else
 	{
-		error("put bitmap %d:%d\n", id, idx);
+		logger(Core, Error, "cache_put_bitmap(), failed, id=%d, idx=%d\n", id, idx);
 	}
 }
 
@@ -259,14 +262,15 @@ cache_save_state(void)
 	for (id = 0; id < NUM_ELEMENTS(g_bmpcache); id++)
 		if (IS_PERSISTENT(id))
 		{
-			DEBUG_RDP5(("Saving cache state for bitmap cache %d...", id));
+			logger(Core, Debug,
+			       "cache_save_state(), saving cache state for bitmap cache %d", id);
 			idx = g_bmpcache_lru[id];
 			while (idx >= 0)
 			{
 				pstcache_touch_bitmap(id, idx, ++t);
 				idx = g_bmpcache[id][idx].next;
 			}
-			DEBUG_RDP5((" %d stamps written.\n", t));
+			logger(Core, Debug, "cache_save_state(), %d stamps written", t);
 		}
 }
 
@@ -287,7 +291,7 @@ cache_get_font(uint8 font, uint16 character)
 			return glyph;
 	}
 
-	error("get font %d:%d\n", font, character);
+	logger(Core, Debug, "cache_get_font(), font=%d, char=%d", font, character);
 	return NULL;
 }
 
@@ -312,7 +316,7 @@ cache_put_font(uint8 font, uint16 character, uint16 offset,
 	}
 	else
 	{
-		error("put font %d:%d\n", font, character);
+		logger(Core, Error, "cache_put_font(), failed, font=%d, char=%d", font, character);
 	}
 }
 
@@ -362,7 +366,7 @@ cache_get_desktop(uint32 offset, int cx, int cy, int bytes_per_pixel)
 		return &g_deskcache[offset];
 	}
 
-	error("get desktop %d:%d\n", offset, length);
+	logger(Core, Debug, "cache_get_desktop(), offset=%d, length=%d", offset, length);
 	return NULL;
 }
 
@@ -387,7 +391,7 @@ cache_put_desktop(uint32 offset, int cx, int cy, int scanline, int bytes_per_pix
 	}
 	else
 	{
-		error("put desktop %d:%d\n", offset, length);
+		logger(Core, Error, "cache_put_desktop(), offset=%d, length=%d", offset, length);
 	}
 }
 
@@ -408,7 +412,7 @@ cache_get_cursor(uint16 cache_idx)
 			return cursor;
 	}
 
-	error("get cursor %d\n", cache_idx);
+	logger(Core, Debug, "cache_get_cursor(), idx=%d", cache_idx);
 	return NULL;
 }
 
@@ -428,12 +432,12 @@ cache_put_cursor(uint16 cache_idx, RD_HCURSOR cursor)
 	}
 	else
 	{
-		error("put cursor %d\n", cache_idx);
+		logger(Core, Error, "cache_put_cursor(), failed, idx=%d", cache_idx);
 	}
 }
 
 /* BRUSH CACHE */
-/* index 0 is 2 colour brush, index 1 is muti colour brush */
+/* index 0 is 2 colour brush, index 1 is multi colour brush */
 static BRUSHDATA g_brushcache[2][64];
 
 /* Retrieve brush from cache */
@@ -445,12 +449,12 @@ cache_get_brush_data(uint8 colour_code, uint8 idx)
 	{
 		return &g_brushcache[colour_code][idx];
 	}
-	error("get brush %d %d\n", colour_code, idx);
+	logger(Core, Debug, "cache_get_brush_data(), colour=%d, idx=%d", colour_code, idx);
 	return NULL;
 }
 
 /* Store brush in cache */
-/* this function takes over the data pointer in struct, eg, caller gives it up */
+/* this function takes over the data pointer in struct, e.g. caller gives it up */
 void
 cache_put_brush_data(uint8 colour_code, uint8 idx, BRUSHDATA * brush_data)
 {
@@ -468,6 +472,6 @@ cache_put_brush_data(uint8 colour_code, uint8 idx, BRUSHDATA * brush_data)
 	}
 	else
 	{
-		error("put brush %d %d\n", colour_code, idx);
+		logger(Core, Error, "cache_put_brush_data(), colour=%d, idx=%d", colour_code, idx);
 	}
 }

@@ -5,6 +5,7 @@
    Copyright (C) GuoJunBo <guojunbo@ict.ac.cn> 2003
    Copyright 2006-2008 Pierre Ossman <ossman@cendio.se> for Cendio AB
    Copyright 2005-2011 Peter Astrand <astrand@cendio.se> for Cendio AB
+   Copyright 2017 Henrik Andersson <hean01@cendio.se> for Cendio AB
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -33,6 +34,7 @@
 #include "rdesktop.h"
 #include "rdpsnd.h"
 #include "rdpsnd_dsp.h"
+
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -69,6 +71,7 @@ static RD_BOOL oss_set_format(RD_WAVEFORMATEX * pwfx);
 static void
 oss_add_fds(int *n, fd_set * rfds, fd_set * wfds, struct timeval *tv)
 {
+	UNUSED(tv);
 	if (dsp_fd == -1)
 		return;
 
@@ -154,7 +157,8 @@ oss_open(int wanted)
 			if ((ioctl(dsp_fd, SNDCTL_DSP_GETCAPS, &caps) < 0)
 			    || !(caps & DSP_CAP_DUPLEX))
 			{
-				warning("This device is not capable of full duplex operation.\n");
+				logger(Sound, Warning,
+				       "this OSS device is not capable of full duplex operation");
 				return False;
 			}
 			close(dsp_fd);
@@ -173,7 +177,7 @@ oss_open(int wanted)
 
 	if (dsp_fd == -1)
 	{
-		perror(dsp_dev);
+		logger(Sound, Error, "oss_open(), open() failed: %s", strerror(errno));
 		return False;
 	}
 
@@ -282,7 +286,8 @@ oss_set_format(RD_WAVEFORMATEX * pwfx)
 
 	if (ioctl(dsp_fd, SNDCTL_DSP_SETFMT, &format) == -1)
 	{
-		perror("SNDCTL_DSP_SETFMT");
+		logger(Sound, Error, "oss_set_format(), ioctl(SNDCTL_DSP_SETFMT) failed: %s",
+		       strerror(errno));
 		oss_close();
 		return False;
 	}
@@ -299,7 +304,8 @@ oss_set_format(RD_WAVEFORMATEX * pwfx)
 
 	if (ioctl(dsp_fd, SNDCTL_DSP_STEREO, &stereo) == -1)
 	{
-		perror("SNDCTL_DSP_CHANNELS");
+		logger(Sound, Error, "oss_set_format(), ioctl(SNDCTL_DSP_CHANNELS) failed: %s",
+		       strerror(errno));
 		oss_close();
 		return False;
 	}
@@ -321,7 +327,8 @@ oss_set_format(RD_WAVEFORMATEX * pwfx)
 				if (rdpsnd_dsp_resample_set
 				    (snd_rate, pwfx->wBitsPerSample, pwfx->nChannels) == False)
 				{
-					error("rdpsnd_dsp_resample_set failed");
+					logger(Sound, Error,
+					       "oss_set_format(), rdpsnd_dsp_resample_set() failed");
 					oss_close();
 					return False;
 				}
@@ -333,7 +340,8 @@ oss_set_format(RD_WAVEFORMATEX * pwfx)
 
 		if (*prates == 0)
 		{
-			perror("SNDCTL_DSP_SPEED");
+			logger(Sound, Error, "oss_set_format(), SNDCTL_DSP_SPEED failed: %s",
+			       strerror(errno));
 			oss_close();
 			return False;
 		}
@@ -350,16 +358,17 @@ oss_set_format(RD_WAVEFORMATEX * pwfx)
 		memset(&info, 0, sizeof(info));
 		if (ioctl(dsp_fd, SNDCTL_DSP_GETOSPACE, &info) == -1)
 		{
-			perror("SNDCTL_DSP_GETOSPACE");
+			logger(Sound, Error, "SNDCTL_DSP_GETOSPACE ioctl failed: %s",
+			       strerror(errno));
 			oss_close();
 			return False;
 		}
 
 		if (info.fragments == 0 || info.fragstotal == 0 || info.fragsize == 0)
 		{
-			fprintf(stderr,
-				"Broken OSS-driver detected: fragments: %d, fragstotal: %d, fragsize: %d\n",
-				info.fragments, info.fragstotal, info.fragsize);
+			logger(Sound, Error,
+			       "broken OSS-driver detected: fragments: %d, fragstotal: %d, fragsize: %d\n",
+			       info.fragments, info.fragstotal, info.fragsize);
 			driver_broken = True;
 		}
 	}
@@ -379,7 +388,8 @@ oss_volume(uint16 left, uint16 right)
 
 	if (ioctl(dsp_fd, MIXER_WRITE(SOUND_MIXER_PCM), &volume) == -1)
 	{
-		warning("hardware volume control unavailable, falling back to software volume control!\n");
+		logger(Sound, Warning,
+		       "hardware volume control unavailable, falling back to software volume control");
 		oss_driver.wave_out_volume = rdpsnd_dsp_softvol_set;
 		rdpsnd_dsp_softvol_set(left, right);
 		return;
@@ -392,6 +402,8 @@ oss_play(void)
 	struct audio_packet *packet;
 	ssize_t len;
 	STREAM out;
+	size_t before;
+	const unsigned char *data;
 
 	assert(dsp_fd != -1);
 
@@ -400,17 +412,20 @@ oss_play(void)
 		return;
 
 	packet = rdpsnd_queue_current_packet();
-	out = &packet->s;
+	out = packet->s;
 
-	len = out->end - out->p;
+	before = s_tell(out);
 
-	len = write(dsp_fd, out->p, (len > MAX_LEN) ? MAX_LEN : len);
+	len = MIN(s_remaining(out), MAX_LEN);
+	in_uint8p(out, data, len);
+
+	len = write(dsp_fd, data, len);
 	if (len == -1)
 	{
 		if (errno != EWOULDBLOCK)
 		{
 			if (!dsp_broken)
-				perror("RDPSND: write()");
+				logger(Sound, Error, "failed to write buffer: %s", strerror(errno));
 			dsp_broken = True;
 			rdpsnd_queue_next(0);
 		}
@@ -419,9 +434,10 @@ oss_play(void)
 
 	dsp_broken = False;
 
-	out->p += len;
+	/* We might not have written everything */
+	s_seek(out, before + len);
 
-	if (out->p == out->end)
+	if (s_check_end(out))
 	{
 		int delay_bytes;
 		unsigned long delay_us;
@@ -471,7 +487,7 @@ oss_record(void)
 		if (errno != EWOULDBLOCK)
 		{
 			if (!dsp_broken)
-				perror("RDPSND: read()");
+				logger(Sound, Error, "failed to read samples: %s", strerror(errno));
 			dsp_broken = True;
 			rdpsnd_queue_next(0);
 		}

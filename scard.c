@@ -3,7 +3,10 @@
    Smart Card support
    Copyright (C) Alexi Volkov <alexi@myrealbox.com> 2006
    Copyright 2010-2013 Pierre Ossman <ossman@cendio.se> for Cendio AB
-   Copyright 2011-2014 Henrik Andersson <hean01@cendio.se> for Cendio AB
+   Copyright 2011-2017 Henrik Andersson <hean01@cendio.se> for Cendio AB
+   Copyright 2015 Rostislav Kondratenko <r.kondratenk@wwpass.com>
+   Copyright 2017 Karl Mikaelsson <derfian@cendio.se> for Cendio AB
+   Copyright 2016-2018 Alexander Zakharov <uglym8@gmail.com>
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -27,11 +30,11 @@
 #include <sys/types.h>
 #include <time.h>
 #include <arpa/inet.h>
-#ifndef MAKE_PROTO
 #ifdef __APPLE__
 #include <PCSC/wintypes.h>
 #include <PCSC/pcsclite.h>
 #include <PCSC/winscard.h>
+#define SCARD_CTL_CODE(code) (0x42000000 + (code))
 #else
 #include <wintypes.h>
 #include <pcsclite.h>
@@ -85,7 +88,6 @@ static void *queue_handler_function(void *data);
 
 /* code segment */
 
-#endif /* MAKE_PROTO */
 void
 scardSetInfo(uint32 epoch, uint32 device, uint32 id, uint32 bytes_out)
 {
@@ -95,33 +97,49 @@ scardSetInfo(uint32 epoch, uint32 device, uint32 id, uint32 bytes_out)
 	curEpoch = epoch;
 }
 
-#ifndef MAKE_PROTO
-
 static RD_NTSTATUS
 scard_create(uint32 device_id, uint32 accessmask, uint32 sharemode, uint32 create_disposition,
 	     uint32 flags_and_attributes, char *filename, RD_NTHANDLE * phandle)
 {
+	UNUSED(device_id);
+	UNUSED(accessmask);
+	UNUSED(sharemode);
+	UNUSED(create_disposition);
+	UNUSED(flags_and_attributes);
+	UNUSED(filename);
+	UNUSED(phandle);
+
 	return RD_STATUS_SUCCESS;
 }
 
 static RD_NTSTATUS
 scard_close(RD_NTHANDLE handle)
 {
+	UNUSED(handle);
 	return RD_STATUS_SUCCESS;
 }
 
 static RD_NTSTATUS
-scard_read(RD_NTHANDLE handle, uint8 * data, uint32 length, uint32 offset, uint32 * result)
+scard_read(RD_NTHANDLE handle, uint8 * data, uint32 length, uint64 offset, uint32 * result)
 {
+	UNUSED(handle);
+	UNUSED(data);
+	UNUSED(length);
+	UNUSED(offset);
+	UNUSED(result);
 	return RD_STATUS_SUCCESS;
 }
 
 static RD_NTSTATUS
-scard_write(RD_NTHANDLE handle, uint8 * data, uint32 length, uint32 offset, uint32 * result)
+scard_write(RD_NTHANDLE handle, uint8 * data, uint32 length, uint64 offset, uint32 * result)
 {
+	UNUSED(handle);
+	UNUSED(data);
+	UNUSED(length);
+	UNUSED(offset);
+	UNUSED(result);
 	return RD_STATUS_SUCCESS;
 }
-#endif /* MAKE_PROTO */
 
 /* Enumeration of devices from rdesktop.c        */
 /* returns numer of units found and initialized. */
@@ -143,7 +161,7 @@ scard_enum_devices(uint32 * id, char *optarg)
 	rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &hContext);
 	if (rv != SCARD_S_SUCCESS)
 	{
-		error("scard_enum_devices: PCSC service not available\n");
+		logger(SmartCard, Error, "scard_enum_devices(), PCSC service not available");
 		return 0;
 	}
 	else
@@ -153,26 +171,29 @@ scard_enum_devices(uint32 * id, char *optarg)
 
 	if (0 != pthread_mutex_init(&queueAccess, NULL))
 	{
-		error("scard_enum_devices: Can't initialize queue access mutex\n");
+		logger(SmartCard, Error,
+		       "scard_enum_devices(), can't initialize queue access mutex");
 		return 0;
 	}
 
 	if (0 != pthread_cond_init(&queueEmpty, NULL))
 	{
-		error("scard_enum_devices: Can't initialize queue control cv\n");
+		logger(SmartCard, Error, "scard_enum_devices(), can't initialize queue control cv");
 		return 0;
 	}
 
 	if (0 != pthread_mutex_init(&hcardAccess, NULL))
 	{
-		error("scard_enum_devices: Can't initialize hcard list access mutex\n");
+		logger(SmartCard, Error,
+		       "scard_enum_devices(), can't initialize hcard list access mutex");
 		return 0;
 	}
 
 	if (0 !=
 	    pthread_create(&queueHandler, NULL, (void *(*)(void *)) queue_handler_function, NULL))
 	{
-		error("scard_enum_devices: Can't create queue handling Thread\n");
+		logger(SmartCard, Error,
+		       "scard_enum_devices(), can't create queue handling thread");
 		return 0;
 	}
 
@@ -202,10 +223,9 @@ scard_enum_devices(uint32 * id, char *optarg)
 					vendor = "\0";
 				}
 
-				printf("Static/aliased Device:\n");
-				printf("  Lin name: [%s]\n", name);
-				printf("  Win name: [%s]\n", alias);
-				printf("  Vendor  : [%s]\n", vendor);
+				logger(SmartCard, Debug,
+				       "scard_enum_devices(), name='%s', alias='%s', vendor='%s'",
+				       name, alias, vendor);
 				nameMapCount++;
 
 				if (nameMapList == NULL)
@@ -217,10 +237,8 @@ scard_enum_devices(uint32 * id, char *optarg)
 
 				tmpMap = nameMapList + nameMapCount - 1;
 
-				len = strlen(alias);
-				strncpy(tmpMap->alias, alias, (len > 127) ? (127) : (len));
-				len = strlen(name);
-				strncpy(tmpMap->name, name, (len > 127) ? (127) : (len));
+				STRNCPY(tmpMap->alias, alias, sizeof(tmpMap->alias));
+				STRNCPY(tmpMap->name, name, sizeof(tmpMap->name));
 
 				if (vendor)
 				{
@@ -228,8 +246,8 @@ scard_enum_devices(uint32 * id, char *optarg)
 					if (len > 0)
 					{
 						memset(tmpMap->vendor, 0, 128);
-						strncpy(tmpMap->vendor, vendor,
-							(len > 127) ? (127) : (len));
+						STRNCPY(tmpMap->vendor, vendor,
+							sizeof(tmpMap->vendor));
 					}
 					else
 						tmpMap->vendor[0] = '\0';
@@ -244,14 +262,13 @@ scard_enum_devices(uint32 * id, char *optarg)
 	return count;
 }
 
-#ifndef MAKE_PROTO
 typedef struct _scard_handle_list_t
 {
 	struct _scard_handle_list_t *next;
-	/* pcsc handles is datatype long which 
-	   is arch sizedependent */
+	/* PCSC handle is datatype long which 
+	   is arch size-dependent */
 	long handle;
-	/* rdp server handles are always 32bit */
+	/* RDP server handles are always 32 bit */
 	uint32_t server;
 } _scard_handle_list_t;
 
@@ -267,7 +284,7 @@ void
 _scard_handle_list_add(long handle)
 {
 	_scard_handle_list_t *list = g_scard_handle_list;
-	/* we dont care of order of list so to simplify the add 
+	/* we don't care of order of list so to simplify the add 
 	   we add new items to front of list */
 	_scard_handle_list_t *item = xmalloc(sizeof(_scard_handle_list_t));
 	item->next = list;
@@ -283,7 +300,11 @@ _scard_handle_list_add(long handle)
 		g_scard_handle_counter++;
 
 		if (g_scard_handle_counter == 0 && overlap)
-			assert(!"broken smartcard client software, handles are not freed and there is no more handles left to allocate.");
+		{
+			logger(SmartCard, Error,
+			       "_scard_handle_list_add(), broken smartcard client software, handles are not freed and no more handles left to allocate");
+			abort();
+		}
 
 		if (g_scard_handle_counter == 0)
 			overlap = g_scard_handle_counter = 1;
@@ -516,7 +537,7 @@ outBufferStart(STREAM out, int length)
 static void
 outBufferFinishWithLimit(STREAM out, char *buffer, unsigned int length, unsigned int highLimit)
 {
-	int header = (length < 0) ? (0) : ((length > highLimit) ? (highLimit) : (length));
+	unsigned int header = (length > highLimit) ? (highLimit) : (length);
 	out_uint32_le(out, header);
 
 	if (length <= 0)
@@ -527,7 +548,7 @@ outBufferFinishWithLimit(STREAM out, char *buffer, unsigned int length, unsigned
 	{
 		if (header < length)
 			length = header;
-		out_uint8p(out, buffer, length);
+		out_uint8a(out, buffer, length);
 		outRepos(out, length);
 	}
 }
@@ -541,7 +562,7 @@ outBufferFinish(STREAM out, char *buffer, unsigned int length)
 static void
 outForceAlignment(STREAM out, unsigned int seed)
 {
-	SERVER_DWORD add = (seed - (out->p - out->data) % seed) % seed;
+	SERVER_DWORD add = (seed - s_tell(out) % seed) % seed;
 	if (add > 0)
 		out_uint8s(out, add);
 }
@@ -558,7 +579,7 @@ inString(PMEM_HANDLE * handle, STREAM in, char **destination, SERVER_DWORD dataL
 
 	if (wide)
 	{
-		int i;
+		unsigned int i;
 		in_uint8a(in, buffer, 2 * dataLength);
 		for (i = 0; i < dataLength; i++)
 			if ((buffer[2 * i] < 0) || (buffer[2 * i + 1] != 0))
@@ -592,7 +613,7 @@ outString(STREAM out, char *source, RD_BOOL wide)
 
 	if (wide)
 	{
-		int i;
+		unsigned int i;
 		char *buffer = SC_xmalloc(&lcHandle, Result);
 
 		for (i = 0; i < dataLength; i++)
@@ -603,11 +624,11 @@ outString(STREAM out, char *source, RD_BOOL wide)
 				buffer[2 * i] = reader[i];
 			buffer[2 * i + 1] = '\0';
 		}
-		out_uint8p(out, buffer, 2 * dataLength);
+		out_uint8a(out, buffer, 2 * dataLength);
 	}
 	else
 	{
-		out_uint8p(out, reader, dataLength);
+		out_uint8a(out, reader, dataLength);
 	}
 
 	SC_xfreeallmemory(&lcHandle);
@@ -618,7 +639,7 @@ static void
 inReaderName(PMEM_HANDLE * handle, STREAM in, char **destination, RD_BOOL wide)
 {
 	SERVER_DWORD dataLength;
-	in->p += 0x08;
+	in_uint8s(in, 0x08);
 	in_uint32_le(in, dataLength);
 	inRepos(in, inString(handle, in, destination, dataLength, wide));
 }
@@ -642,6 +663,7 @@ inSkipLinked(STREAM in)
 static MYPCSC_DWORD
 SC_returnCode(MYPCSC_DWORD rc, PMEM_HANDLE * handle, STREAM in, STREAM out)
 {
+	UNUSED(in);
 	SC_xfreeallmemory(handle);
 	out_uint8s(out, 256);
 	return rc;
@@ -656,42 +678,46 @@ SC_returnNoMemoryError(PMEM_HANDLE * handle, STREAM in, STREAM out)
 static MYPCSC_DWORD
 TS_SCardEstablishContext(STREAM in, STREAM out)
 {
+	UNUSED(in);
 	MYPCSC_DWORD rv;
 	MYPCSC_SCARDCONTEXT myHContext;
 	SERVER_SCARDCONTEXT hContext;
 
-	/* code segment  */
-
-	DEBUG_SCARD(("SCARD: SCardEstablishContext()\n"));
-	rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &myHContext);
-
 	hContext = 0;
-	if (myHContext)
+
+	/* code segment  */
+	logger(SmartCard, Debug, "TS_SCardEstablishContext()");
+
+	rv = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &myHContext);
+	if (rv != SCARD_S_SUCCESS)
 	{
-		_scard_handle_list_add(myHContext);
-		hContext = _scard_handle_list_get_server_handle(myHContext);
+		logger(SmartCard, Debug, "TS_SCardEstablishContext(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
+		goto bail_out;
 	}
 
-
-	if (rv)
+	if (!myHContext)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
-	}
-	else
-	{
-		DEBUG_SCARD(("SCARD: -> Success (context: 0x%08x [0x%lx])\n", hContext,
-			     myHContext));
+		logger(SmartCard, Debug, "TS_SCardEstablishedContext(), myHContext == NULL");
+		goto bail_out;
 	}
 
+	/* add context to list of handle and get server handle */
+	_scard_handle_list_add(myHContext);
+	hContext = _scard_handle_list_get_server_handle(myHContext);
 
+	logger(SmartCard, Debug,
+	       "TS_SCardEstablishContext(), success. context: 0x%08x, [0x%lx]", hContext,
+	       myHContext);
 
+      bail_out:
 	out_uint32_le(out, 0x00000004);
 	out_uint32_le(out, hContext);	/* must not be 0 (Seems to be pointer), don't know what is this (I use hContext as value) */
-	/* i hope it's not a pointer because i just downcasted it - jlj */
+	/* I hope it's not a pointer because i just downcasted it - jlj */
 	out_uint32_le(out, 0x00000004);
 	out_uint32_le(out, hContext);
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	return rv;
 }
 
@@ -702,12 +728,12 @@ TS_SCardReleaseContext(STREAM in, STREAM out)
 	MYPCSC_SCARDCONTEXT myHContext;
 	SERVER_SCARDCONTEXT hContext;
 
-	in->p += 0x1C;
+	in_uint8s(in, 0x1C);
 	in_uint32_le(in, hContext);
 	myHContext = _scard_handle_list_get_pcsc_handle(hContext);
 
-	DEBUG_SCARD(("SCARD: SCardReleaseContext(context: 0x%08x [0x%lx])\n", (unsigned) hContext,
-		     myHContext));
+	logger(SmartCard, Debug, "TS_SCardReleaseContext(), context=0x%08x [0x%lx]",
+	       (unsigned) hContext, myHContext);
 
 	rv = SCardReleaseContext(myHContext);
 
@@ -715,15 +741,19 @@ TS_SCardReleaseContext(STREAM in, STREAM out)
 
 	if (rv)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Debug, "TS_SCardReleaseContext(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 	}
 	else
 	{
-		DEBUG_SCARD(("SCARD: -> Success\n"));
+		logger(SmartCard, Debug,
+		       "TS_SCardReleaseContext(), success, context: 0x%08x, [0x%lx]", hContext,
+		       myHContext);
+
 	}
 
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	return rv;
 }
 
@@ -733,38 +763,32 @@ TS_SCardIsValidContext(STREAM in, STREAM out)
 	MYPCSC_DWORD rv;
 	SERVER_SCARDCONTEXT hContext;
 	MYPCSC_SCARDCONTEXT myHContext;
-	char *readers;
-	DWORD readerCount = 1024;
-	PMEM_HANDLE lcHandle = NULL;
 
-	in->p += 0x1C;
+	in_uint8s(in, 0x1C);
 	in_uint32_le(in, hContext);
 
 	myHContext = _scard_handle_list_get_pcsc_handle(hContext);
 
-	DEBUG_SCARD(("SCARD: SCardIsValidContext(context: 0x%08x [0x%lx])\n",
-		     (unsigned) hContext, myHContext));
-	/* There is no realization of SCardIsValidContext in PC/SC Lite so we call SCardListReaders */
+	logger(SmartCard, Debug, "TS_SCardIsValidContext(), context: 0x%08x [0x%lx]",
+	       (unsigned) hContext, myHContext);
 
-	readers = SC_xmalloc(&lcHandle, 1024);
-	if (!readers)
-		return SC_returnNoMemoryError(&lcHandle, in, out);
-
-	rv = SCardListReaders(myHContext, NULL, readers, &readerCount);
+	rv = SCardIsValidContext(myHContext);
 
 	if (rv)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Debug, "TS_SCardIsValidContext(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 		rv = SCARD_E_INVALID_HANDLE;
 	}
 	else
 	{
-		DEBUG_SCARD(("SCARD: -> Success\n"));
+		logger(SmartCard, Debug,
+		       "TS_SCardIsValidContext(), success, context: 0x%08x, [0x%lx]", hContext,
+		       myHContext);
 	}
 
 	outForceAlignment(out, 8);
-	SC_xfreeallmemory(&lcHandle);
+	s_mark_end(out);
 	return rv;
 }
 
@@ -778,19 +802,21 @@ TS_SCardListReaders(STREAM in, STREAM out, RD_BOOL wide)
 	MYPCSC_SCARDCONTEXT myHContext;
 	SERVER_DWORD dataLength;
 	MYPCSC_DWORD cchReaders = readerArraySize;
-	unsigned char *plen1, *plen2, *pend;
+	size_t plen1, plen2, pend;
 	char *readers, *cur;
 	PMEM_HANDLE lcHandle = NULL;
 
-	in->p += 0x2C;
+	in_uint8s(in, 0x2C);
 	in_uint32_le(in, hContext);
 	myHContext = _scard_handle_list_get_pcsc_handle(hContext);
-	DEBUG_SCARD(("SCARD: SCardListReaders(context: 0x%08x [0x%lx])\n",
-		     (unsigned) hContext, myHContext));
-	plen1 = out->p;
+
+	logger(SmartCard, Debug, "TS_SCardListReaders(), context: 0x%08x [0x%lx])",
+	       (unsigned) hContext, myHContext);
+
+	plen1 = s_tell(out);
 	out_uint32_le(out, 0x00000000);	/* Temp value for data length as 0x0 */
 	out_uint32_le(out, 0x01760650);
-	plen2 = out->p;
+	plen2 = s_tell(out);
 	out_uint32_le(out, 0x00000000);	/* Temp value for data length as 0x0 */
 
 	dataLength = 0;
@@ -805,14 +831,16 @@ TS_SCardListReaders(STREAM in, STREAM out, RD_BOOL wide)
 	cur = readers;
 	if (rv != SCARD_S_SUCCESS)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Debug, "TS_SCardListReaders(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 	}
 	else
 	{
 		int i;
 		PSCNameMapRec tmpMap;
-		DEBUG_SCARD(("SCARD: -> Success\n"));
+		logger(SmartCard, Debug, "TS_SCardListReaders(), success, context: 0x%08x [0x%lx]",
+		       (unsigned) hContext, myHContext);
+
 		for (i = 0, tmpMap = nameMapList; i < nameMapCount; i++, tmpMap++)
 		{
 			dataLength += outString(out, tmpMap->alias, wide);
@@ -826,7 +854,8 @@ TS_SCardListReaders(STREAM in, STREAM out, RD_BOOL wide)
 			{
 				if (!hasAlias(cur))
 				{
-					DEBUG_SCARD(("SCARD:    \"%s\"\n", cur));
+					logger(SmartCard, Debug, "TS_SCardListReaders(),    '%s'",
+					       cur);
 					dataLength += outString(out, cur, wide);
 				}
 				cur = (void *) ((unsigned char *) cur + lenSC + 1);
@@ -837,14 +866,17 @@ TS_SCardListReaders(STREAM in, STREAM out, RD_BOOL wide)
 	dataLength += outString(out, "\0", wide);
 	outRepos(out, dataLength);
 
-	pend = out->p;
-	out->p = plen1;
+	s_mark_end(out);
+
+	pend = s_tell(out);
+	s_seek(out, plen1);
 	out_uint32_le(out, dataLength);
-	out->p = plen2;
+	s_seek(out, plen2);
 	out_uint32_le(out, dataLength);
-	out->p = pend;
+	s_seek(out, pend);
 
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	SC_xfreeallmemory(&lcHandle);
 	return rv;
 }
@@ -865,16 +897,19 @@ TS_SCardConnect(STREAM in, STREAM out, RD_BOOL wide)
 	MYPCSC_DWORD dwActiveProtocol;
 	PMEM_HANDLE lcHandle = NULL;
 
-	in->p += 0x1C;
+	in_uint8s(in, 0x1C);
 	in_uint32_le(in, dwShareMode);
 	in_uint32_le(in, dwPreferredProtocol);
 	inReaderName(&lcHandle, in, &szReader, wide);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 	in_uint32_le(in, hContext);
 
 	myHContext = _scard_handle_list_get_pcsc_handle(hContext);
 
-	DEBUG_SCARD(("SCARD: SCardConnect(context: 0x%08x [0x%lx], share: 0x%08x, proto: 0x%08x, reader: \"%s\")\n", (unsigned) hContext, myHContext, (unsigned) dwShareMode, (unsigned) dwPreferredProtocol, szReader ? szReader : "NULL"));
+	logger(SmartCard, Debug,
+	       "TS_SCardConnect(), context: 0x%08x [0x%lx], share: 0x%08x, proto: 0x%08x, reader: '%s'",
+	       (unsigned) hContext, myHContext, (unsigned) dwShareMode,
+	       (unsigned) dwPreferredProtocol, szReader ? szReader : "NULL");
 
 	rv = SCardConnect(myHContext, szReader, (MYPCSC_DWORD) dwShareMode,
 			  (MYPCSC_DWORD) dwPreferredProtocol, &myHCard, &dwActiveProtocol);
@@ -886,37 +921,45 @@ TS_SCardConnect(STREAM in, STREAM out, RD_BOOL wide)
 		hCard = _scard_handle_list_get_server_handle(myHCard);
 	}
 
-	if (rv != SCARD_S_SUCCESS)
+	switch (rv)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
-	}
-	else
-	{
-		char *szVendor = getVendor(szReader);
-		DEBUG_SCARD(("SCARD: -> Success (hcard: 0x%08x [0x%lx])\n",
-			     (unsigned) hCard, myHCard));
-		if (szVendor && (strlen(szVendor) > 0))
-		{
-			DEBUG_SCARD(("SCARD: Set Attribute ATTR_VENDOR_NAME\n"));
-			pthread_mutex_lock(&hcardAccess);
-			PSCHCardRec hcard = xmalloc(sizeof(TSCHCardRec));
-			if (hcard)
+		case SCARD_S_SUCCESS:
 			{
-				hcard->hCard = hCard;
-				hcard->vendor = szVendor;
-				hcard->next = NULL;
-				hcard->prev = NULL;
+				char *szVendor = getVendor(szReader);
+				logger(SmartCard, Debug,
+				       "TS_SCardConnect(), success, hcard: 0x%08x [0x%lx]",
+				       (unsigned) hCard, myHCard);
 
-				if (hcardFirst)
+				if (szVendor && (strlen(szVendor) > 0))
 				{
-					hcardFirst->prev = hcard;
-					hcard->next = hcardFirst;
+					logger(SmartCard, Debug,
+					       "TS_SCardConnect(), set attribute ATTR_VENDOR_NAME");
+					pthread_mutex_lock(&hcardAccess);
+					PSCHCardRec hcard = xmalloc(sizeof(TSCHCardRec));
+					if (hcard)
+					{
+						hcard->hCard = hCard;
+						hcard->vendor = szVendor;
+						hcard->next = NULL;
+						hcard->prev = NULL;
+
+						if (hcardFirst)
+						{
+							hcardFirst->prev = hcard;
+							hcard->next = hcardFirst;
+						}
+						hcardFirst = hcard;
+					}
+					pthread_mutex_unlock(&hcardAccess);
 				}
-				hcardFirst = hcard;
 			}
-			pthread_mutex_unlock(&hcardAccess);
-		}
+			break;
+
+		default:
+			logger(SmartCard, Debug,
+			       "TS_SCardConnect(), SCardConnect failed: %s (0x%08x)",
+			       pcsc_stringify_error(rv), rv);
+			break;
 	}
 
 	out_uint32_le(out, 0x00000000);
@@ -929,6 +972,7 @@ TS_SCardConnect(STREAM in, STREAM out, RD_BOOL wide)
 	out_uint32_le(out, hCard);
 
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	SC_xfreeallmemory(&lcHandle);
 	return rv;
 }
@@ -945,32 +989,39 @@ TS_SCardReconnect(STREAM in, STREAM out)
 	SERVER_DWORD dwInitialization;
 	MYPCSC_DWORD dwActiveProtocol;
 
-	in->p += 0x20;
+	in_uint8s(in, 0x20);
 	in_uint32_le(in, dwShareMode);
 	in_uint32_le(in, dwPreferredProtocol);
 	in_uint32_le(in, dwInitialization);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 	in_uint32_le(in, hContext);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 	in_uint32_le(in, hCard);
 
 
 	myHCard = _scard_handle_list_get_pcsc_handle(hCard);
-	DEBUG_SCARD(("SCARD: SCardReconnect(context: 0x%08x, hcard: 0x%08x [%lx], share: 0x%08x, proto: 0x%08x, init: 0x%08x)\n", (unsigned) hContext, (unsigned) hCard, myHCard, (unsigned) dwShareMode, (unsigned) dwPreferredProtocol, (unsigned) dwInitialization));
+
+	logger(SmartCard, Debug,
+	       "TS_SCardReconnect(), context: 0x%08x, hcard: 0x%08x [%lx], share: 0x%08x, proto: 0x%08x, init: 0x%08x",
+	       (unsigned) hContext, (unsigned) hCard, myHCard, (unsigned) dwShareMode,
+	       (unsigned) dwPreferredProtocol, (unsigned) dwInitialization);
+
 	rv = SCardReconnect(myHCard, (MYPCSC_DWORD) dwShareMode, (MYPCSC_DWORD) dwPreferredProtocol,
 			    (MYPCSC_DWORD) dwInitialization, &dwActiveProtocol);
 	if (rv != SCARD_S_SUCCESS)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Debug, "TS_SCardReconnect(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 	}
 	else
 	{
-		DEBUG_SCARD(("SCARD: -> Success (proto: 0x%08x)\n", (unsigned) dwActiveProtocol));
+		logger(SmartCard, Debug, "TS_SCardReconnect(), success, proto=0x%08x",
+		       (unsigned) dwActiveProtocol);
 	}
 
 	out_uint32_le(out, (SERVER_DWORD) dwActiveProtocol);
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	return rv;
 }
 
@@ -984,17 +1035,20 @@ TS_SCardDisconnect(STREAM in, STREAM out)
 	MYPCSC_SCARDHANDLE myHCard;
 	SERVER_DWORD dwDisposition;
 
-	in->p += 0x20;
+	in_uint8s(in, 0x20);
 	in_uint32_le(in, dwDisposition);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 	in_uint32_le(in, hContext);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 	in_uint32_le(in, hCard);
 
 	myHContext = _scard_handle_list_get_pcsc_handle(hContext);
 	myHCard = _scard_handle_list_get_pcsc_handle(hCard);
 
-	DEBUG_SCARD(("SCARD: SCardDisconnect(context: 0x%08x [0x%lx], hcard: 0x%08x [0x%lx], disposition: 0x%08x)\n", (unsigned) hContext, myHContext, (unsigned) hCard, myHCard, (unsigned) dwDisposition));
+	logger(SmartCard, Debug,
+	       "TS_SCardDisconnect(), context: 0x%08x [0x%lx], hcard: 0x%08x [0x%lx], disposition: 0x%08x",
+	       (unsigned) hContext, myHContext, (unsigned) hCard, myHCard,
+	       (unsigned) dwDisposition);
 
 	pthread_mutex_lock(&hcardAccess);
 	PSCHCardRec hcard = hcardFirst;
@@ -1021,15 +1075,16 @@ TS_SCardDisconnect(STREAM in, STREAM out)
 
 	if (rv != SCARD_S_SUCCESS)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Debug, "TS_SCardDisconnect(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 	}
 	else
 	{
-		DEBUG_SCARD(("SCARD: -> Success\n"));
+		logger(SmartCard, Debug, "TS_SCardReconnect(), success");
 	}
 
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	return rv;
 }
 
@@ -1116,16 +1171,18 @@ TS_SCardGetStatusChange(STREAM in, STREAM out, RD_BOOL wide)
 	long i;
 	PMEM_HANDLE lcHandle = NULL;
 
-	in->p += 0x18;
+	in_uint8s(in, 0x18);
 	in_uint32_le(in, dwTimeout);
 	in_uint32_le(in, dwCount);
-	in->p += 0x08;
+	in_uint8s(in, 0x08);
 	in_uint32_le(in, hContext);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 
 	myHContext = _scard_handle_list_get_pcsc_handle(hContext);
 
-	DEBUG_SCARD(("SCARD: SCardGetStatusChange(context: 0x%08x [0x%lx], timeout: 0x%08x, count: %d)\n", (unsigned) hContext, myHContext, (unsigned) dwTimeout, (int) dwCount));
+	logger(SmartCard, Debug,
+	       "TS_SCardGetStatusChange(), context: 0x%08x [0x%lx], timeout: 0x%08x, count: %d",
+	       (unsigned) hContext, myHContext, (unsigned) dwTimeout, (int) dwCount);
 
 	if (dwCount > 0)
 	{
@@ -1149,20 +1206,22 @@ TS_SCardGetStatusChange(STREAM in, STREAM out, RD_BOOL wide)
 			{
 				SERVER_DWORD dataLength;
 
-				in->p += 0x08;
+				in_uint8s(in, 0x08);
 				in_uint32_le(in, dataLength);
 				inRepos(in,
 					inString(&lcHandle, in, (char **) &(cur->szReader),
 						 dataLength, wide));
 
+#if !WITH_PNP_NOTIFICATIONS
 				if (strcmp(cur->szReader, "\\\\?PnP?\\Notification") == 0)
 					cur->dwCurrentState |= SCARD_STATE_IGNORE;
+#endif
 			}
 
-			DEBUG_SCARD(("SCARD:    \"%s\"\n", cur->szReader ? cur->szReader : "NULL"));
-			DEBUG_SCARD(("SCARD:        user: %p, state: 0x%08x, event: 0x%08x\n",
-				     cur->pvUserData, (unsigned) cur->dwCurrentState,
-				     (unsigned) cur->dwEventState));
+			logger(SmartCard, Debug,
+			       "TS_SCardGetStatusChange(), reader='%s', user=%p, state=0x%08x, event=0x%08x",
+			       cur->szReader ? cur->szReader : "NULL", cur->pvUserData,
+			       (unsigned) cur->dwCurrentState, (unsigned) cur->dwEventState);
 		}
 	}
 	else
@@ -1176,24 +1235,18 @@ TS_SCardGetStatusChange(STREAM in, STREAM out, RD_BOOL wide)
 	memset(myRsArray, 0, dwCount * sizeof(SERVER_SCARD_READERSTATE_A));
 	copyReaderState_ServerToMyPCSC(rsArray, myRsArray, (SERVER_DWORD) dwCount);
 
-	/* Workaround for a bug in pcsclite, timeout value of 0 is handled as INFINIT
+	/* Workaround for a bug in pcsc-lite, timeout value of 0 is handled as INFINIT
 	   but is by Windows PCSC spec. used for polling current state.
 	 */
 	if (dwTimeout == 0)
-	  dwTimeout = 1;
+		dwTimeout = 1;
 	rv = SCardGetStatusChange(myHContext, (MYPCSC_DWORD) dwTimeout,
 				  myRsArray, (MYPCSC_DWORD) dwCount);
 	copyReaderState_MyPCSCToServer(myRsArray, rsArray, (MYPCSC_DWORD) dwCount);
 
-	if (rv != SCARD_S_SUCCESS)
-	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
-	}
-	else
-	{
-		DEBUG_SCARD(("SCARD: -> Success\n"));
-	}
+	logger(SmartCard, Debug,
+	       "TS_SCardGetStatusChange(), SCardGetStatusChange returned \"%s\" (0x%08x)",
+	       pcsc_stringify_error(rv), rv);
 
 	out_uint32_le(out, dwCount);
 	out_uint32_le(out, 0x00084dd8);
@@ -1201,20 +1254,21 @@ TS_SCardGetStatusChange(STREAM in, STREAM out, RD_BOOL wide)
 
 	for (i = 0, cur = rsArray; i < dwCount; i++, cur++)
 	{
-		DEBUG_SCARD(("SCARD:    \"%s\"\n", cur->szReader ? cur->szReader : "NULL"));
-		DEBUG_SCARD(("SCARD:        user: %p, state: 0x%08x, event: 0x%08x\n",
-			     cur->pvUserData, (unsigned) cur->dwCurrentState,
-			     (unsigned) cur->dwEventState));
+		logger(SmartCard, Debug,
+		       "TS_SCardGetStatusChange(), reader='%s', user=%p, state=0x%08x, event=0x%08x",
+		       cur->szReader ? cur->szReader : "NULL", cur->pvUserData,
+		       (unsigned) cur->dwCurrentState, (unsigned) cur->dwEventState);
 
 		/* Do endian swaps... */
 		cur->dwCurrentState = swap32(cur->dwCurrentState);
 		cur->dwEventState = swap32(cur->dwEventState);
 		cur->cbAtr = swap32(cur->cbAtr);
 
-		out_uint8p(out, (void *) ((unsigned char **) cur + 2),
+		out_uint8a(out, (void *) ((unsigned char **) cur + 2),
 			   sizeof(SERVER_SCARD_READERSTATE_A) - 2 * sizeof(unsigned char *));
 	}
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	SC_xfreeallmemory(&lcHandle);
 	return rv;
 }
@@ -1226,31 +1280,33 @@ TS_SCardCancel(STREAM in, STREAM out)
 	SERVER_SCARDCONTEXT hContext;
 	MYPCSC_SCARDCONTEXT myHContext;
 
-	in->p += 0x1C;
+	in_uint8s(in, 0x1C);
 	in_uint32_le(in, hContext);
 
 	myHContext = _scard_handle_list_get_pcsc_handle(hContext);
 
-	DEBUG_SCARD(("SCARD: SCardCancel(context: 0x%08x [0x%08lx])\n", (unsigned) hContext,
-		     (unsigned long) myHContext));
+	logger(SmartCard, Debug, "TS_SCardCancel(), context: 0x%08x [0x%08lx]",
+	       (unsigned) hContext, (unsigned long) myHContext);
+
 	rv = SCardCancel(myHContext);
 	if (rv != SCARD_S_SUCCESS)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Debug, "TS_SCardCancel(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 	}
 	else
 	{
-		DEBUG_SCARD(("SCARD: -> Success\n"));
+		logger(SmartCard, Debug, "TS_SCardCancel(), success");
 	}
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	return rv;
 }
 
 static MYPCSC_DWORD
 TS_SCardLocateCardsByATR(STREAM in, STREAM out, RD_BOOL wide)
 {
-	int i, j, k;
+	unsigned int i, j, k;
 	MYPCSC_DWORD rv;
 	SERVER_SCARDCONTEXT hContext;
 	MYPCSC_SCARDCONTEXT myHContext;
@@ -1264,7 +1320,7 @@ TS_SCardLocateCardsByATR(STREAM in, STREAM out, RD_BOOL wide)
 	MYPCSC_LPSCARD_READERSTATE_A myRsArray;
 	PMEM_HANDLE lcHandle = NULL;
 
-	in->p += 0x2C;
+	in_uint8s(in, 0x2C);
 	in_uint32_le(in, hContext);
 	in_uint32_le(in, atrMaskCount);
 	pAtrMasks = SC_xmalloc(&lcHandle, atrMaskCount * sizeof(SCARD_ATRMASK_L));
@@ -1280,26 +1336,15 @@ TS_SCardLocateCardsByATR(STREAM in, STREAM out, RD_BOOL wide)
 
 	myHContext = _scard_handle_list_get_pcsc_handle(hContext);
 
-	DEBUG_SCARD(("SCARD: SCardLocateCardsByATR(context: 0x%08x [0x%08lx], atrs: %d, readers: %d)\n", (unsigned) hContext, (unsigned long) myHContext, (int) atrMaskCount, (int) readerCount));
+	logger(SmartCard, Debug,
+	       "TS_SCardLocateCardsByATR(), context: 0x%08x [0x%08lx], atrs: %d, readers: %d",
+	       (unsigned) hContext, (unsigned long) myHContext, (int) atrMaskCount,
+	       (int) readerCount);
 
 	for (i = 0, cur = pAtrMasks; i < atrMaskCount; i++, cur++)
 	{
 		cur->cbAtr = swap32(cur->cbAtr);
-
-		DEBUG_SCARD(("SCARD:    ATR: "));
-		for (j = 0; j < pAtrMasks->cbAtr; j++)
-		{
-		DEBUG_SCARD(("%02x%c",
-				     (unsigned) (unsigned char) cur->rgbAtr[j],
-				     (j == pAtrMasks->cbAtr - 1) ? ' ' : ':'))}
-		DEBUG_SCARD(("\n"));
-		DEBUG_SCARD(("SCARD:         "));
-		for (j = 0; j < pAtrMasks->cbAtr; j++)
-		{
-		DEBUG_SCARD(("%02x%c",
-				     (unsigned) (unsigned char) cur->rgbMask[j],
-				     (j == pAtrMasks->cbAtr - 1) ? ' ' : ':'))}
-		DEBUG_SCARD(("\n"));
+		/* Fixme, we might want to log the ATR and mask here */
 	}
 
 	for (i = 0, rsCur = (SERVER_LPSCARD_READERSTATE_A) ((unsigned char **) rsArray + 2);
@@ -1321,10 +1366,11 @@ TS_SCardLocateCardsByATR(STREAM in, STREAM out, RD_BOOL wide)
 		rsCur->cbAtr = swap32(rsCur->cbAtr);
 
 		inReaderName(&lcHandle, in, (char **) &rsCur->szReader, wide);
-		DEBUG_SCARD(("SCARD:    \"%s\"\n", rsCur->szReader ? rsCur->szReader : "NULL"));
-		DEBUG_SCARD(("SCARD:        user: %p, state: 0x%08x, event: 0x%08x\n",
-			     rsCur->pvUserData, (unsigned) rsCur->dwCurrentState,
-			     (unsigned) rsCur->dwEventState));
+
+		logger(SmartCard, Debug,
+		       "TS_SCardLocateCardsByATR(), reader='%s', user=%p, state=0x%08x, event=0x%08x",
+		       rsCur->szReader ? rsCur->szReader : "NULL", rsCur->pvUserData,
+		       (unsigned) rsCur->dwCurrentState, (unsigned) rsCur->dwEventState);
 	}
 	memcpy(ResArray, rsArray, readerCount * sizeof(SERVER_SCARD_READERSTATE_A));
 
@@ -1337,12 +1383,12 @@ TS_SCardLocateCardsByATR(STREAM in, STREAM out, RD_BOOL wide)
 	copyReaderState_MyPCSCToServer(myRsArray, rsArray, readerCount);
 	if (rv != SCARD_S_SUCCESS)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Debug, "TS_SCardLocateCardsByATR(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 	}
 	else
 	{
-		DEBUG_SCARD(("SCARD: -> Success\n"));
+		logger(SmartCard, Debug, "TS_SCardLocateCardsByATR(), success");
 		cur = pAtrMasks;
 		for (i = 0, cur = pAtrMasks; i < atrMaskCount; i++, cur++)
 		{
@@ -1362,9 +1408,12 @@ TS_SCardLocateCardsByATR(STREAM in, STREAM out, RD_BOOL wide)
 				{
 					rsCur->dwEventState |= 0x00000040;	/* SCARD_STATE_ATRMATCH 0x00000040 */
 					memcpy(ResArray + j, rsCur, sizeof(SCARD_READERSTATE));
-					DEBUG_SCARD(("SCARD:    \"%s\"\n",
-						     rsCur->szReader ? rsCur->szReader : "NULL"));
-					DEBUG_SCARD(("SCARD:        user: %p, state: 0x%08x, event: 0x%08x\n", rsCur->pvUserData, (unsigned) rsCur->dwCurrentState, (unsigned) rsCur->dwEventState));
+
+					logger(SmartCard, Debug,
+					       "TS_SCardLocateCardsByATR(), reader='%s', user=%p, state=0x%08x, event=0x%08x",
+					       rsCur->szReader ? rsCur->szReader : "NULL",
+					       rsCur->pvUserData, (unsigned) rsCur->dwCurrentState,
+					       (unsigned) rsCur->dwEventState);
 				}
 			}
 		}
@@ -1381,11 +1430,12 @@ TS_SCardLocateCardsByATR(STREAM in, STREAM out, RD_BOOL wide)
 		rsCur->dwEventState = swap32(rsCur->dwEventState);
 		rsCur->cbAtr = swap32(rsCur->cbAtr);
 
-		out_uint8p(out, (void *) ((unsigned char **) rsCur + 2),
+		out_uint8a(out, (void *) ((unsigned char **) rsCur + 2),
 			   sizeof(SCARD_READERSTATE) - 2 * sizeof(unsigned char *));
 	}
 
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	SC_xfreeallmemory(&lcHandle);
 	return rv;
 }
@@ -1397,22 +1447,23 @@ TS_SCardBeginTransaction(STREAM in, STREAM out)
 	SERVER_SCARDCONTEXT hCard;
 	MYPCSC_SCARDCONTEXT myHCard;
 
-	in->p += 0x30;
+	in_uint8s(in, 0x30);
 	in_uint32_le(in, hCard);
 	myHCard = _scard_handle_list_get_pcsc_handle(hCard);
-	DEBUG_SCARD(("SCARD: SCardBeginTransaction(hcard: 0x%08x [0x%lx])\n",
-		     (unsigned) hCard, myHCard));
+	logger(SmartCard, Debug, "TS_SCardBeginTransaction(), hcard: 0x%08x [0x%lx])",
+	       (unsigned) hCard, myHCard);
 	rv = SCardBeginTransaction(myHCard);
 	if (rv != SCARD_S_SUCCESS)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Debug, "TS_SCardBeginTransaction(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 	}
 	else
 	{
-		DEBUG_SCARD(("SCARD: -> Success\n"));
+		logger(SmartCard, Debug, "TS_SCardBeginTransaction(), success");
 	}
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	return rv;
 }
 
@@ -1424,26 +1475,28 @@ TS_SCardEndTransaction(STREAM in, STREAM out)
 	MYPCSC_SCARDCONTEXT myHCard;
 	SERVER_DWORD dwDisposition = 0;
 
-	in->p += 0x20;
+	in_uint8s(in, 0x20);
 	in_uint32_le(in, dwDisposition);
-	in->p += 0x0C;
+	in_uint8s(in, 0x0C);
 	in_uint32_le(in, hCard);
 
 	myHCard = _scard_handle_list_get_pcsc_handle(hCard);
 
-	DEBUG_SCARD(("SCARD: SCardEndTransaction(hcard: 0x%08x [0x%lx], disposition: 0x%08x)\n",
-		     (unsigned) hCard, (unsigned long) myHCard, (unsigned) dwDisposition));
+	logger(SmartCard, Debug,
+	       "TS_SCardEndTransaction(), hcard: 0x%08x [0x%lx], disposition: 0x%08x)",
+	       (unsigned) hCard, (unsigned long) myHCard, (unsigned) dwDisposition);
 	rv = SCardEndTransaction(myHCard, (MYPCSC_DWORD) dwDisposition);
 	if (rv != SCARD_S_SUCCESS)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Debug, "TS_SCardEndTransaction(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 	}
 	else
 	{
-		DEBUG_SCARD(("SCARD: -> Success\n"));
+		logger(SmartCard, Debug, "TS_SCardEndTransaction(), success");
 	}
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	return rv;
 }
 
@@ -1477,7 +1530,7 @@ copyIORequest_ServerToMyPCSC(SERVER_LPSCARD_IO_REQUEST src, MYPCSC_LPSCARD_IO_RE
 
 
 static DWORD
-TS_SCardTransmit(STREAM in, STREAM out)
+TS_SCardTransmit(STREAM in, STREAM out, uint32 srv_buf_len)
 {
 	MYPCSC_DWORD rv;
 	SERVER_DWORD map[7], linkedLen;
@@ -1491,9 +1544,10 @@ TS_SCardTransmit(STREAM in, STREAM out)
 	MYPCSC_DWORD myCbRecvLength;
 	PMEM_HANDLE lcHandle = NULL;
 
-	in->p += 0x14;
+
+	in_uint8s(in, 0x14);
 	in_uint32_le(in, map[0]);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 	in_uint32_le(in, map[1]);
 	pioSendPci = SC_xmalloc(&lcHandle, sizeof(SERVER_SCARD_IO_REQUEST));
 	if (!pioSendPci)
@@ -1508,7 +1562,10 @@ TS_SCardTransmit(STREAM in, STREAM out)
 	if (map[0] & INPUT_LINKED)
 		inSkipLinked(in);
 
-	in->p += 0x04;
+	if (srv_buf_len <= cbRecvLength)
+		cbRecvLength = srv_buf_len;
+
+	in_uint8s(in, 0x04);
 	in_uint32_le(in, hCard);
 	myHCard = _scard_handle_list_get_pcsc_handle(hCard);
 
@@ -1576,7 +1633,9 @@ TS_SCardTransmit(STREAM in, STREAM out)
 	else
 		pioRecvPci = NULL;
 
-	DEBUG_SCARD(("SCARD: SCardTransmit(hcard: 0x%08x [0x%08lx], send: %d bytes, recv: %d bytes)\n", (unsigned) hCard, (unsigned long) myHCard, (int) cbSendLength, (int) cbRecvLength));
+	logger(SmartCard, Debug,
+	       "TS_SCardTransmit(), 0x%08x [0x%08lx], send: %d bytes, recv: %d bytes",
+	       (unsigned) hCard, (unsigned long) myHCard, (int) cbSendLength, (int) cbRecvLength);
 
 	myCbRecvLength = cbRecvLength;
 	myPioSendPci = SC_xmalloc(&lcHandle,
@@ -1604,13 +1663,6 @@ TS_SCardTransmit(STREAM in, STREAM out)
 			   myPioRecvPci, recvBuf, &myCbRecvLength);
 	cbRecvLength = myCbRecvLength;
 
-	/* FIXME: handle responses with length > 448 bytes */
-	if (cbRecvLength > 448)
-	{
-		warning("Card response limited from %d to 448 bytes!\n", cbRecvLength);
-		DEBUG_SCARD(("SCARD:    Truncated %d to %d\n", (unsigned int) cbRecvLength, 448));
-		cbRecvLength = 448;
-	}
 
 	if (pioRecvPci)
 	{
@@ -1624,12 +1676,13 @@ TS_SCardTransmit(STREAM in, STREAM out)
 
 	if (rv != SCARD_S_SUCCESS)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Debug, "TS_SCardTransmit(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 	}
 	else
 	{
-		DEBUG_SCARD(("SCARD: -> Success (%d bytes)\n", (int) cbRecvLength));
+		logger(SmartCard, Debug, "TS_SCardTransmit(), success, %d bytes",
+		       (int) cbRecvLength);
 #if 0
 		if ((pioRecvPci != NULL) && (mypioRecvPci->cbPciLength > 0))
 		{
@@ -1656,6 +1709,7 @@ TS_SCardTransmit(STREAM in, STREAM out)
 		outBufferFinish(out, (char *) recvBuf, cbRecvLength);
 	}
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	SC_xfreeallmemory(&lcHandle);
 	return rv;
 }
@@ -1673,18 +1727,22 @@ TS_SCardStatus(STREAM in, STREAM out, RD_BOOL wide)
 	char *readerName;
 	unsigned char *atr;
 
-	in->p += 0x24;
+	in_uint8s(in, 0x24);
 	in_uint32_le(in, dwReaderLen);
 	in_uint32_le(in, dwAtrLen);
-	in->p += 0x0C;
+	in_uint8s(in, 0x0C);
 	in_uint32_le(in, hCard);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 	myHCard = _scard_handle_list_get_pcsc_handle(hCard);
-	DEBUG_SCARD(("SCARD: SCardStatus(hcard: 0x%08x [0x%08lx], reader len: %d bytes, atr len: %d bytes)\n", (unsigned) hCard, (unsigned long) myHCard, (int) dwReaderLen, (int) dwAtrLen));
+	logger(SmartCard, Debug,
+	       "TS_SCardStatus(), hcard: 0x%08x [0x%08lx], reader len: %d bytes, atr len: %d bytes",
+	       (unsigned) hCard, (unsigned long) myHCard, (int) dwReaderLen, (int) dwAtrLen);
 
-	if (dwReaderLen <= 0 || dwReaderLen == SCARD_AUTOALLOCATE || dwReaderLen > SCARD_MAX_MEM)
+	if (dwReaderLen == 0 || dwReaderLen == (SERVER_DWORD) SCARD_AUTOALLOCATE
+	    || dwReaderLen > SCARD_MAX_MEM)
 		dwReaderLen = SCARD_MAX_MEM;
-	if (dwAtrLen <= 0 || dwAtrLen == SCARD_AUTOALLOCATE || dwAtrLen > SCARD_MAX_MEM)
+	if (dwAtrLen == 0 || dwAtrLen == (SERVER_DWORD) SCARD_AUTOALLOCATE
+	    || dwAtrLen > SCARD_MAX_MEM)
 		dwAtrLen = SCARD_MAX_MEM;
 
 #if 1
@@ -1717,23 +1775,14 @@ TS_SCardStatus(STREAM in, STREAM out, RD_BOOL wide)
 
 	if (rv != SCARD_S_SUCCESS)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Debug, "TS_SCardTransmit(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 		return SC_returnCode(rv, &lcHandle, in, out);
 	}
 	else
 	{
-		int i;
-
-		DEBUG_SCARD(("SCARD: -> Success (state: 0x%08x, proto: 0x%08x)\n",
-			     (unsigned) dwState, (unsigned) dwProtocol));
-		DEBUG_SCARD(("SCARD:        Reader: \"%s\"\n", readerName ? readerName : "NULL"));
-		DEBUG_SCARD(("SCARD:        ATR: "));
-		for (i = 0; i < dwAtrLen; i++)
-		{
-			DEBUG_SCARD(("%02x%c", atr[i], (i == dwAtrLen - 1) ? ' ' : ':'));
-		}
-		DEBUG_SCARD(("\n"));
+		logger(SmartCard, Debug, "TS_SCardTransmit(), success, state=0x%08x, proto=0x%08x",
+		       (unsigned) dwState, (unsigned) dwProtocol);
 
 		if (dwState & (SCARD_SPECIFIC | SCARD_NEGOTIABLE))
 			dwState = 0x00000006;
@@ -1756,31 +1805,33 @@ TS_SCardStatus(STREAM in, STREAM out, RD_BOOL wide)
 		else
 			dwState = 0x00000000;
 
-		void *p_len1 = out->p;
+		size_t p_len1 = s_tell(out);
 		out_uint32_le(out, dwReaderLen);
 		out_uint32_le(out, 0x00020000);
 		out_uint32_le(out, dwState);
 		out_uint32_le(out, dwProtocol);
-		out_uint8p(out, atr, dwAtrLen);
+		out_uint8a(out, atr, dwAtrLen);
 		if (dwAtrLen < 32)
 		{
 			out_uint8s(out, 32 - dwAtrLen);
 		}
 		out_uint32_le(out, dwAtrLen);
 
-		void *p_len2 = out->p;
+		size_t p_len2 = s_tell(out);
 		out_uint32_le(out, dwReaderLen);
 		dataLength = outString(out, readerName, wide);
 		dataLength += outString(out, "\0", wide);
 		outRepos(out, dataLength);
-		void *psave = out->p;
-		out->p = p_len1;
+		s_mark_end(out);
+		size_t psave = s_tell(out);
+		s_seek(out, p_len1);
 		out_uint32_le(out, dataLength);
-		out->p = p_len2;
+		s_seek(out, p_len2);
 		out_uint32_le(out, dataLength);
-		out->p = psave;
+		s_seek(out, psave);
 	}
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	SC_xfreeallmemory(&lcHandle);
 	return rv;
 }
@@ -1797,18 +1848,19 @@ TS_SCardState(STREAM in, STREAM out)
 	char *readerName;
 	unsigned char *atr;
 
-	in->p += 0x24;
+	in_uint8s(in, 0x24);
 	in_uint32_le(in, dwAtrLen);
-	in->p += 0x0C;
+	in_uint8s(in, 0x0C);
 	in_uint32_le(in, hCard);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 	myHCard = _scard_handle_list_get_pcsc_handle(hCard);
 
-	DEBUG_SCARD(("SCARD: SCardState(hcard: 0x%08x [0x%08lx], atr len: %d bytes)\n",
-		     (unsigned) hCard, (unsigned long) myHCard, (int) dwAtrLen));
+	logger(SmartCard, Debug, "TS_SCardState(), hcard: 0x%08x [0x%08lx], atrlen: %d bytes",
+	       (unsigned) hCard, (unsigned long) myHCard, (int) dwAtrLen);
 
 	dwReaderLen = SCARD_MAX_MEM;
-	if (dwAtrLen <= 0 || dwAtrLen == SCARD_AUTOALLOCATE || dwAtrLen > SCARD_MAX_MEM)
+	if (dwAtrLen <= 0 || dwAtrLen == (SERVER_DWORD) SCARD_AUTOALLOCATE
+	    || dwAtrLen > SCARD_MAX_MEM)
 		dwAtrLen = SCARD_MAX_MEM;
 
 	readerName = SC_xmalloc(&lcHandle, dwReaderLen + 2);
@@ -1831,22 +1883,14 @@ TS_SCardState(STREAM in, STREAM out)
 
 	if (rv != SCARD_S_SUCCESS)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Debug, "TS_SCardState(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 		return SC_returnCode(rv, &lcHandle, in, out);
 	}
 	else
 	{
-		int i;
-
-		DEBUG_SCARD(("SCARD: -> Success (state: 0x%08x, proto: 0x%08x)\n",
-			     (unsigned) dwState, (unsigned) dwProtocol));
-		DEBUG_SCARD(("SCARD:        ATR: "));
-		for (i = 0; i < dwAtrLen; i++)
-		{
-			DEBUG_SCARD(("%02x%c", atr[i], (i == dwAtrLen - 1) ? ' ' : ':'));
-		}
-		DEBUG_SCARD(("\n"));
+		logger(SmartCard, Debug, "TS_SCardState(), success, state=0x%08x, proto=0x%08x",
+		       (unsigned) dwState, (unsigned) dwProtocol);
 
 		if (dwState & (SCARD_SPECIFIC | SCARD_NEGOTIABLE))
 			dwState = 0x00000006;
@@ -1874,10 +1918,11 @@ TS_SCardState(STREAM in, STREAM out)
 		out_uint32_le(out, dwAtrLen);
 		out_uint32_le(out, 0x00000001);
 		out_uint32_le(out, dwAtrLen);
-		out_uint8p(out, atr, dwAtrLen);
+		out_uint8a(out, atr, dwAtrLen);
 		outRepos(out, dwAtrLen);
 	}
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	SC_xfreeallmemory(&lcHandle);
 	return rv;
 }
@@ -1899,15 +1944,15 @@ TS_SCardListReaderGroups(STREAM in, STREAM out)
 	char *szGroups;
 	PMEM_HANDLE lcHandle = NULL;
 
-	in->p += 0x20;
+	in_uint8s(in, 0x20);
 	in_uint32_le(in, dwGroups);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 	in_uint32_le(in, hContext);
 
 	myHContext = _scard_handle_list_get_pcsc_handle(hContext);
 
-	DEBUG_SCARD(("SCARD: SCardListReaderGroups(context: 0x%08x [0x%08lx], groups: %d)\n",
-		     (unsigned) hContext, (unsigned int) myHContext, (int) dwGroups));
+	logger(SmartCard, Debug, "TS_SCardListReaderGroups(), ontext: 0x%08x [0x%08lx], groups: %d",
+	       (unsigned) hContext, (unsigned int) myHContext, (int) dwGroups);
 
 	if (dwGroups <= 0 || dwGroups == SCARD_AUTOALLOCATE || dwGroups > SCARD_MAX_MEM)
 		dwGroups = SCARD_MAX_MEM;
@@ -1922,8 +1967,8 @@ TS_SCardListReaderGroups(STREAM in, STREAM out)
 
 	if (rv)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Error, "TS_SCardListReaderGroups(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 		return SC_returnCode(rv, &lcHandle, in, out);
 	}
 	else
@@ -1931,10 +1976,10 @@ TS_SCardListReaderGroups(STREAM in, STREAM out)
 		int i;
 		char *cur;
 
-		DEBUG_SCARD(("SCARD: -> Success\n"));
+		logger(SmartCard, Debug, "TS_SCardListReaderGroups(), success");
 		for (i = 0, cur = szGroups; i < dwGroups; i++, cur += strlen(cur) + 1)
 		{
-			DEBUG_SCARD(("SCARD:    %s\n", cur));
+			logger(SmartCard, Debug, "TS_SCardListReaderGroups(),      %s", cur);
 		}
 	}
 
@@ -1947,6 +1992,7 @@ TS_SCardListReaderGroups(STREAM in, STREAM out)
 	out_uint32_le(out, 0x00000000);
 
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	SC_xfreeallmemory(&lcHandle);
 	return rv;
 }
@@ -1963,31 +2009,26 @@ TS_SCardGetAttrib(STREAM in, STREAM out)
 	unsigned char *pbAttr;
 	PMEM_HANDLE lcHandle = NULL;
 
-	in->p += 0x20;
+	in_uint8s(in, 0x20);
 	in_uint32_le(in, dwAttrId);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 	in_uint32_le(in, dwAttrLen);
-	in->p += 0x0C;
+	in_uint8s(in, 0x0C);
 	in_uint32_le(in, hCard);
 	myHCard = _scard_handle_list_get_pcsc_handle(hCard);
 
-	DEBUG_SCARD(("SCARD: SCardGetAttrib(hcard: 0x%08x [0x%08lx], attrib: 0x%08x (%d bytes))\n",
-		     (unsigned) hCard, (unsigned long) myHCard,
-		     (unsigned) dwAttrId, (int) dwAttrLen));
+	logger(SmartCard, Debug,
+	       "TS_SCardGetAttrib(), hcard: 0x%08x [0x%08lx], attrib: 0x%08x (%d bytes)",
+	       (unsigned) hCard, (unsigned long) myHCard, (unsigned) dwAttrId, (int) dwAttrLen);
 
-	if (dwAttrLen > MAX_BUFFER_SIZE)
-		dwAttrLen = MAX_BUFFER_SIZE;
-
-
-	if (dwAttrLen > SCARD_AUTOALLOCATE)
-		pbAttr = NULL;
-	else if ((dwAttrLen < 0) || (dwAttrLen > SCARD_MAX_MEM))
+	pbAttr = NULL;
+	if (dwAttrLen != (SERVER_DWORD) SCARD_AUTOALLOCATE)
 	{
-		dwAttrLen = (SERVER_DWORD) SCARD_AUTOALLOCATE;
-		pbAttr = NULL;
-	}
-	else
-	{
+		if (dwAttrLen > MAX_BUFFER_SIZE)
+		{
+			dwAttrLen = MAX_BUFFER_SIZE;
+		}
+
 		pbAttr = SC_xmalloc(&lcHandle, dwAttrLen);
 		if (!pbAttr)
 			return SC_returnNoMemoryError(&lcHandle, in, out);
@@ -1999,13 +2040,13 @@ TS_SCardGetAttrib(STREAM in, STREAM out)
 
 	if (rv != SCARD_S_SUCCESS)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Debug, "TS_SCardGetAttrib(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 		return SC_returnCode(rv, &lcHandle, in, out);
 	}
 	else
 	{
-		DEBUG_SCARD(("SCARD: -> Success (%d bytes)\n", (int) dwAttrLen));
+		logger(SmartCard, Debug, "TS_SCardGetAttrib(), %d bytes", (int) dwAttrLen);
 
 		out_uint32_le(out, dwAttrLen);
 		out_uint32_le(out, 0x00000200);
@@ -2016,12 +2057,13 @@ TS_SCardGetAttrib(STREAM in, STREAM out)
 		}
 		else
 		{
-			out_uint8p(out, pbAttr, dwAttrLen);
+			out_uint8a(out, pbAttr, dwAttrLen);
 		}
 		outRepos(out, dwAttrLen);
 		out_uint32_le(out, 0x00000000);
 	}
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	return rv;
 }
 
@@ -2038,17 +2080,18 @@ TS_SCardSetAttrib(STREAM in, STREAM out)
 	unsigned char *pbAttr;
 	PMEM_HANDLE lcHandle = NULL;
 
-	in->p += 0x20;
+	in_uint8s(in, 0x20);
 	in_uint32_le(in, dwAttrId);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 	in_uint32_le(in, dwAttrLen);
-	in->p += 0x0C;
+	in_uint8s(in, 0x0C);
 	in_uint32_le(in, hCard);
 	myHCard = scHandleToMyPCSC(hCard);
 
-	DEBUG_SCARD(("SCARD: SCardSetAttrib(hcard: 0x%08x [0x%08lx], attrib: 0x%08x (%d bytes))\n",
-		     (unsigned) hCard, (unsigned long) myHCard,
-		     (unsigned) dwAttrId, (int) dwAttrLen));
+
+	logger(SmartCard, Debug,
+	       "TS_SCardSetAttrib(), hcard: 0x%08x [0x%08lx], attrib: 0x%08x (%d bytes)",
+	       (unsigned) hCard, (unsigned long) myHCard, (unsigned) dwAttrId, (int) dwAttrLen);
 
 	if (dwAttrLen > MAX_BUFFER_SIZE)
 		dwAttrLen = MAX_BUFFER_SIZE;
@@ -2062,12 +2105,12 @@ TS_SCardSetAttrib(STREAM in, STREAM out)
 
 	if (rv != SCARD_S_SUCCESS)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Error, "TS_SCardSetAttrib(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 	}
 	else
 	{
-		DEBUG_SCARD(("SCARD: -> Success\n"));
+		logger(SmartCard, Debug, "TS_SCardSetAttrib(), success");
 	}
 
 	out_uint32_le(out, 0x00000000);
@@ -2075,6 +2118,7 @@ TS_SCardSetAttrib(STREAM in, STREAM out)
 	out_uint32_le(out, 0x00000000);
 	out_uint32_le(out, 0x00000000);
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	SC_xfreeallmemory(&lcHandle);
 	return rv;
 }
@@ -2100,18 +2144,18 @@ TS_SCardControl(STREAM in, STREAM out)
 	pInBuffer = NULL;
 	pOutBuffer = NULL;
 
-	in->p += 0x14;
+	in_uint8s(in, 0x14);
 	in_uint32_le(in, map[0]);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 	in_uint32_le(in, map[1]);
 	in_uint32_le(in, dwControlCode);
 	in_uint32_le(in, nInBufferSize);
 	in_uint32_le(in, map[2]);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 	in_uint32_le(in, nOutBufferSize);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 	in_uint32_le(in, hContext);
-	in->p += 0x04;
+	in_uint8s(in, 0x04);
 	in_uint32_le(in, hCard);
 	if (map[2] & INPUT_LINKED)
 	{
@@ -2129,9 +2173,14 @@ TS_SCardControl(STREAM in, STREAM out)
 	myHCard = _scard_handle_list_get_pcsc_handle(hCard);
 	myHContext = _scard_handle_list_get_pcsc_handle(hContext);
 
-	DEBUG_SCARD(("SCARD: SCardControl(context: 0x%08x [0x%08lx], hcard: 0x%08x [0x%08lx], code: 0x%08x, in: %d bytes, out: %d bytes)\n", (unsigned) hContext, (unsigned long) myHContext, (unsigned) hCard, (unsigned long) myHCard, (unsigned) dwControlCode, (int) nInBufferSize, (int) nOutBufferSize));
+	logger(SmartCard, Debug,
+	       "TS_SCardControl(), context: 0x%08x [0x%08lx], hcard: 0x%08x [0x%08lx], code: 0x%08x, in: %d bytes, out: %d bytes)\n",
+	       (unsigned) hContext, (unsigned long) myHContext, (unsigned) hCard,
+	       (unsigned long) myHCard, (unsigned) dwControlCode, (int) nInBufferSize,
+	       (int) nOutBufferSize);
 
 	/* Is this a proper Windows smart card ioctl? */
+	/* FILE_DEVICE_SMARTCARD defined as 0x000031 in Winsmcrd.h  */
 	if ((dwControlCode & 0xffff0000) == (49 << 16))
 	{
 		/* Translate to local encoding */
@@ -2140,7 +2189,28 @@ TS_SCardControl(STREAM in, STREAM out)
 	}
 	else
 	{
-		warning("Bogus smart card control code 0x%08x\n", dwControlCode);
+		/*
+		 * According to "Interoperability Specification for ICCs and Personal Computer Systems.
+		 * Part 10 IFDs with Secure PIN Entry Capabilities Supplement - IFDs with Feature Capabilities"
+		 * you have to issue GET_FEATURE_REQUEST to get codes for supported features.
+		 *
+		 * You have to use only those codes not some hardcoded values.
+		 *
+		 * So the correct way to do fix this would be to parse received TLV from
+		 * CM_IOCTL_GET_FEATURE_REQUEST and get all codes for the corresponding features for
+		 * the particular reader as these values are defined by the driver itself and not
+		 * by pcsclite.
+		 *
+		 */
+
+		/* ATM, I removed features code transformations */
+		/* You know what to do if any problem arises in the future. */
+		if ((dwControlCode & 0xff000000) != SCARD_CTL_CODE(0))
+		{
+			logger(SmartCard, Warning,
+			       "TS_SCardControl(), bogus smart card control code 0x%08x",
+			       dwControlCode);
+		}
 	}
 
 #if 0
@@ -2173,42 +2243,26 @@ TS_SCardControl(STREAM in, STREAM out)
 
 	if (rv != SCARD_S_SUCCESS)
 	{
-		DEBUG_SCARD(("SCARD: -> Failure: %s (0x%08x)\n",
-			     pcsc_stringify_error(rv), (unsigned int) rv));
+		logger(SmartCard, Debug, "TS_SCardControl(), failed: %s (0x%08x)",
+		       pcsc_stringify_error(rv), (unsigned int) rv);
 	}
 	else
 	{
-		DEBUG_SCARD(("SCARD: -> Success (out: %d bytes)\n", (int) nBytesReturned));
+		logger(SmartCard, Debug, "TS_SCardControl(), success, out: %d bytes",
+		       (int) nBytesReturned);
 	}
-
-#ifdef PCSCLITE_VERSION_NUMBER
-	if (dwControlCode == SCARD_CTL_CODE(3400))
-	{
-		int i;
-		SERVER_DWORD cc;
-
-		for (i = 0; i < nBytesReturned / 6; i++)
-		{
-			memcpy(&cc, pOutBuffer + 2 + i * 6, 4);
-			cc = ntohl(cc);
-			cc = cc - 0x42000000;
-			cc = (49 << 16) | (cc << 2);
-			cc = htonl(cc);
-			memcpy(pOutBuffer + 2 + i * 6, &cc, 4);
-		}
-	}
-#endif
 
 	out_uint32_le(out, nBytesReturned);
 	out_uint32_le(out, 0x00000004);
 	out_uint32_le(out, nBytesReturned);
 	if (nBytesReturned > 0)
 	{
-		out_uint8p(out, pOutBuffer, nBytesReturned);
+		out_uint8a(out, pOutBuffer, nBytesReturned);
 		outRepos(out, nBytesReturned);
 	}
 
 	outForceAlignment(out, 8);
+	s_mark_end(out);
 	SC_xfreeallmemory(&lcHandle);
 	return rv;
 }
@@ -2216,27 +2270,33 @@ TS_SCardControl(STREAM in, STREAM out)
 static MYPCSC_DWORD
 TS_SCardAccessStartedEvent(STREAM in, STREAM out)
 {
-	DEBUG_SCARD(("SCARD: SCardAccessStartedEvent()\n"));
+	UNUSED(in);
+	logger(SmartCard, Debug, "TS_SCardAccessStartedEvent()");
 	out_uint8s(out, 8);
 	return SCARD_S_SUCCESS;
 }
 
 
 static RD_NTSTATUS
-scard_device_control(RD_NTHANDLE handle, uint32 request, STREAM in, STREAM out)
+scard_device_control(RD_NTHANDLE handle, uint32 request, STREAM in, STREAM out, uint32 srv_buf_len)
 {
+	UNUSED(handle);
 	SERVER_DWORD Result = 0x00000000;
-	unsigned char *psize, *pend, *pStatusCode;
+	size_t psize, pend, pStatusCode;
 	SERVER_DWORD addToEnd = 0;
 
 	/* Processing request */
 
+	/* See MS-RSPESC 1.3 Overview for protocol flow */
+
+	/* Set CommonTypeHeader (MS-RPCE 2.2.6.1) */
 	out_uint32_le(out, 0x00081001);	/* Header lines */
 	out_uint32_le(out, 0xCCCCCCCC);
-	psize = out->p;
+	psize = s_tell(out);
+	/* Set PrivateTypeHeader (MS-RPCE 2.2.6.2) */
 	out_uint32_le(out, 0x00000000);	/* Size of data portion */
-	out_uint32_le(out, 0x00000000);	/* Zero bytes (may be usefull) */
-	pStatusCode = out->p;
+	out_uint32_le(out, 0x00000000);	/* Zero bytes (may be useful) */
+	pStatusCode = s_tell(out);
 	out_uint32_le(out, 0x00000000);	/* Status Code */
 
 	switch (request)
@@ -2324,7 +2384,7 @@ scard_device_control(RD_NTHANDLE handle, uint32 request, STREAM in, STREAM out)
 			/* ScardTransmit */
 		case SC_TRANSMIT:
 			{
-				Result = (SERVER_DWORD) TS_SCardTransmit(in, out);
+				Result = (SERVER_DWORD) TS_SCardTransmit(in, out, srv_buf_len);
 				break;
 			}
 			/* SCardControl */
@@ -2360,7 +2420,9 @@ scard_device_control(RD_NTHANDLE handle, uint32 request, STREAM in, STREAM out)
 			}
 		default:
 			{
-				warning("SCARD: Unknown function %d\n", (int) request);
+				logger(SmartCard, Warning,
+				       "scard_device_control(), unhandled operation %d",
+				       (int) request);
 				Result = 0x80100014;
 				out_uint8s(out, 256);
 				break;
@@ -2370,22 +2432,28 @@ scard_device_control(RD_NTHANDLE handle, uint32 request, STREAM in, STREAM out)
 #if 0
 	out_uint32_le(out, 0x00000000);
 #endif
+	s_mark_end(out);
+
 	/* Setting modified variables */
-	pend = out->p;
+	pend = s_tell(out);
 	/* setting data size */
-	out->p = psize;
+	s_seek(out, psize);
 	out_uint32_le(out, pend - psize - 16);
 	/* setting status code */
-	out->p = pStatusCode;
+	s_seek(out, pStatusCode);
 	out_uint32_le(out, Result);
 	/* finish */
-	out->p = pend;
+	s_seek(out, pend);
 
+	/* TODO: Check MS-RPCE 2.2.6.2 for alignment requirements (IIRC length must be integral multiple of 8) */
 	addToEnd = (pend - pStatusCode) % 16;
 	if (addToEnd < 16 && addToEnd > 0)
 	{
 		out_uint8s(out, addToEnd);
+		s_mark_end(out);
 	}
+
+	if (Result == SCARD_E_INSUFFICIENT_BUFFER) return RD_STATUS_BUFFER_TOO_SMALL;
 
 	return RD_STATUS_SUCCESS;
 }
@@ -2395,6 +2463,7 @@ scard_device_control(RD_NTHANDLE handle, uint32 request, STREAM in, STREAM out)
 static STREAM
 duplicateStream(PMEM_HANDLE * handle, STREAM s, uint32 buffer_size, RD_BOOL isInputStream)
 {
+	// FIXME: Shouldn't be allocating streams manually
 	STREAM d = SC_xmalloc(handle, sizeof(struct stream));
 	if (d != NULL)
 	{
@@ -2460,6 +2529,7 @@ SC_addToQueue(RD_NTHANDLE handle, uint32 request, STREAM in, STREAM out)
 		data->epoch = curEpoch;
 		data->handle = handle;
 		data->request = request;
+		data->srv_buf_len = curBytesOut - 0x14;
 		data->in = duplicateStream(&(data->memHandle), in, 0, SC_TRUE);
 		if (data->in == NULL)
 		{
@@ -2526,16 +2596,21 @@ SC_getNextInQueue()
 static void
 SC_deviceControl(PSCThreadData data)
 {
+	RD_NTSTATUS status;
 	size_t buffer_len = 0;
-	scard_device_control(data->handle, data->request, data->in, data->out);
-	buffer_len = (size_t) data->out->p - (size_t) data->out->data;
+	status = scard_device_control(data->handle, data->request, data->in, data->out, data->srv_buf_len);
+	buffer_len = s_tell(data->out);
 
 	/* if iorequest belongs to another epoch, don't send response
-	   back to server due to it's considered as abdonend.
+	   back to server due to it's considered as abandoned.
 	 */
 	if (data->epoch == curEpoch)
-		rdpdr_send_completion(data->device, data->id, 0, buffer_len, data->out->data,
-				      buffer_len);
+	{
+		uint8 *buf;
+		s_seek(data->out, 0);
+		in_uint8p(data->out, buf, buffer_len);
+		rdpdr_send_completion(data->device, data->id, status, buffer_len, buf, buffer_len);
+	}
 
 	SC_destroyThreadData(data);
 }
@@ -2598,7 +2673,8 @@ SC_handleRequest(PSCThreadData data)
 	Result = pthread_create(&cur->thread, NULL, (void *(*)(void *)) thread_function, cur);
 	if (0 != Result)
 	{
-		error("[THREAD CREATE ERROR 0x%.8x]\n", Result);
+		logger(SmartCard, Debug, "SC_handleRequest(), pthread_create() failed with 0x%.8x",
+		       Result);
 		SC_xfree(&threadListHandle, cur);
 		SC_destroyThreadData(data);
 		data = NULL;
@@ -2610,6 +2686,7 @@ SC_handleRequest(PSCThreadData data)
 static void *
 queue_handler_function(void *data)
 {
+	UNUSED(data);
 	PSCThreadData cur_data = NULL;
 	while (1)
 	{
@@ -2648,7 +2725,6 @@ DEVICE_FNS scard_fns = {
 	scard_write,
 	thread_wrapper
 };
-#endif /* MAKE_PROTO */
 
 void
 scard_lock(int lock)
@@ -2689,4 +2765,26 @@ scard_reset_state()
 	curBytesOut = 0;
 
 	queueFirst = queueLast = NULL;
+}
+
+void
+scard_release_all_contexts(void)
+{
+	_scard_handle_list_t *item, *next;
+
+	item = g_scard_handle_list;
+
+	while (item)
+	{
+		/* Cancelling ScardGetStatusChange calls */
+		SCardCancel(item->handle);
+		/* releasing context to end all transactions on it */
+		SCardReleaseContext(item->handle);
+
+		next = item->next;
+		xfree(item);
+		item = next;
+	}
+
+	g_scard_handle_list = NULL;
 }

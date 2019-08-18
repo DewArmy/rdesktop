@@ -3,6 +3,7 @@
    Common data types
    Copyright (C) Matthew Chapman 1999-2008
    Copyright 2014 Henrik Andersson <hean01@cendio.se> for Cendio AB
+   Copyright 2017 Karl Mikaelsson <derfian@cendio.se> for Cendio AB
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,11 +19,22 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#ifndef _TYPES_H
+#define _TYPES_H
+
+#include <stdint.h>
+#include "constants.h"
+#include "stream.h"
+
 typedef int RD_BOOL;
 
 #ifndef True
 #define True  (1)
 #define False (0)
+#endif
+
+#ifndef PATH_MAX
+#define PATH_MAX 256
 #endif
 
 typedef unsigned char uint8;
@@ -31,6 +43,10 @@ typedef unsigned short uint16;
 typedef signed short sint16;
 typedef unsigned int uint32;
 typedef signed int sint32;
+typedef uint64_t uint64;
+typedef int64_t sint64;
+
+#define RD_UINT32_MAX (uint32)(-1)
 
 typedef void *RD_HBITMAP;
 typedef void *RD_HGLYPH;
@@ -203,9 +219,9 @@ typedef struct _DEVICE_FNS
 			      uint32 create_disposition, uint32 flags_and_attributes,
 			      char *filename, RD_NTHANDLE * handle);
 	RD_NTSTATUS(*close) (RD_NTHANDLE handle);
-	RD_NTSTATUS(*read) (RD_NTHANDLE handle, uint8 * data, uint32 length, uint32 offset,
+	RD_NTSTATUS(*read) (RD_NTHANDLE handle, uint8 * data, uint32 length, uint64 offset,
 			    uint32 * result);
-	RD_NTSTATUS(*write) (RD_NTHANDLE handle, uint8 * data, uint32 length, uint32 offset,
+	RD_NTSTATUS(*write) (RD_NTHANDLE handle, uint8 * data, uint32 length, uint64 offset,
 			     uint32 * result);
 	RD_NTSTATUS(*device_control) (RD_NTHANDLE handle, uint32 request, STREAM in, STREAM out);
 }
@@ -221,6 +237,12 @@ typedef struct rdpdr_device_info
 	void *pdevice_data;
 }
 RDPDR_DEVICE;
+
+typedef struct rdpdr_disk_device_info
+{
+	char name[PATH_MAX];
+}
+DISK_DEVICE;
 
 typedef struct rdpdr_serial_device_info
 {
@@ -276,10 +298,6 @@ typedef struct notify_data
 }
 NOTIFY;
 
-#ifndef PATH_MAX
-#define PATH_MAX 256
-#endif
-
 typedef struct fileinfo
 {
 	uint32 device_id, flags_and_attributes, accessmask;
@@ -294,3 +312,13 @@ typedef struct fileinfo
 FILEINFO;
 
 typedef RD_BOOL(*str_handle_lines_t) (const char *line, void *data);
+
+typedef enum
+{
+	Fixed,
+	PercentageOfScreen,
+	Workarea,
+	Fullscreen,
+} window_size_type_t;
+
+#endif /* _TYPES_H */

@@ -3,7 +3,7 @@
    Entrypoint and utility functions
    Copyright (C) Matthew Chapman <matthewc.unsw.edu.au> 1999-2008
    Copyright (C) Jeroen Meijer <jeroen@oldambt7.com> 2003-2008
-   Copyright (C) Henrik Andersson <hean01@cendio.com> 2013
+   Copyright (C) Henrik Andersson <hean01@cendio.se> 2013-2017
    
   
    This program is free software: you can redistribute it and/or modify
@@ -47,7 +47,7 @@ printercache_mkdir(char *base, char *printer)
 	sprintf(path, "%s/.rdesktop", base);
 	if ((mkdir(path, 0700) == -1) && errno != EEXIST)
 	{
-		perror(path);
+		logger(Core, Error, "printercache_mkdir(), mkdir() failed: %s", strerror(errno));
 		xfree(path);
 		return False;
 	}
@@ -55,7 +55,7 @@ printercache_mkdir(char *base, char *printer)
 	strcat(path, "/rdpdr");
 	if ((mkdir(path, 0700) == -1) && errno != EEXIST)
 	{
-		perror(path);
+		logger(Core, Error, "printercache_mkdir(), mkdir() failed: %s", strerror(errno));
 		xfree(path);
 		return False;
 	}
@@ -64,7 +64,7 @@ printercache_mkdir(char *base, char *printer)
 	strcat(path, printer);
 	if ((mkdir(path, 0700) == -1) && errno != EEXIST)
 	{
-		perror(path);
+		logger(Core, Error, "printercache_mkdir(), mkdir() failed: %s", strerror(errno));
 		xfree(path);
 		return False;
 	}
@@ -137,9 +137,12 @@ printercache_rename_blob(char *printer, char *new_printer)
 	sprintf(printer_path, "%s/.rdesktop/rdpdr/%s", home, printer);
 	sprintf(new_printer_path, "%s/.rdesktop/rdpdr/%s", home, new_printer);
 
-	printf("%s,%s\n", printer_path, new_printer_path);
+	logger(Core, Debug, "printercache_rename_blob(), printer_path=%s, new_printer_path=%s",
+	       printer_path, new_printer_path);
 	if (rename(printer_path, new_printer_path) < 0)
 	{
+		logger(Core, Error, "printercache_rename_blob(), rename() failed: %s",
+		       strerror(errno));
 		xfree(printer_path);
 		xfree(new_printer_path);
 		return False;
@@ -214,14 +217,15 @@ printercache_save_blob(char *printer_name, uint8 * data, uint32 length)
 	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 	if (fd == -1)
 	{
-		perror(path);
+		logger(Core, Error, "printercache_save_blob(), open() failed: %s", strerror(errno));
 		xfree(path);
 		return;
 	}
 
 	if (write(fd, data, length) != length)
 	{
-		perror(path);
+		logger(Core, Error, "printercache_save_blob(), write() failed: %s",
+		       strerror(errno));
 		unlink(path);
 	}
 
@@ -234,6 +238,8 @@ printercache_process(STREAM s)
 {
 	uint32 type, printer_length, driver_length, printer_unicode_length, blob_length;
 	char device_name[9], *printer, *driver;
+	size_t blob_start;
+	unsigned char *blob;
 
 	printer = driver = NULL;
 
@@ -275,8 +281,10 @@ printercache_process(STREAM s)
 			{
 				rdp_in_unistr(s, printer_unicode_length, &printer,
 					      &printer_unicode_length);
-				if (printer)
-					printercache_save_blob(printer, s->p, blob_length);
+				if (printer) {
+					in_uint8p(s, blob, blob_length);
+					printercache_save_blob(printer, blob, blob_length);
+				}
 				free(printer);
 			}
 			break;
@@ -285,6 +293,7 @@ printercache_process(STREAM s)
 			in_uint8a(s, device_name, 5);	/* get LPTx/COMx name */
 
 			/* need to fetch this data so that we can get the length of the packet to store. */
+			blob_start = s_tell(s);
 			in_uint8s(s, 0x2);	/* ??? */
 			in_uint8s(s, 0x2)	/* pad?? */
 				in_uint32_be(s, driver_length);
@@ -298,14 +307,15 @@ printercache_process(STREAM s)
 				/* rewind stream so that we can save this blob   */
 				/* length is driver_length + printer_length + 19 */
 				/* rewind stream */
-				s->p = s->p - 19;
+			s_seek(s, blob_start);
 
-			printercache_save_blob(device_name, s->p,
-					       driver_length + printer_length + 19);
+			blob_length = driver_length + printer_length + 19;
+			in_uint8p(s, blob, blob_length);
+			printercache_save_blob(device_name, blob, blob_length);
 			break;
 		default:
-
-			unimpl("RDPDR Printer Cache Packet Type: %d\n", type);
+			logger(Protocol, Warning,
+			       "printercache_process(), unhandled packet type %d", type);
 			break;
 	}
 }

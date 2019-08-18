@@ -1,7 +1,7 @@
 /* -*- c-basic-offset: 8 -*-
    rdesktop: A Remote Desktop Protocol client.
-   CredSSP layer and kerberos support.
-   Copyright 2012-2013 Henrik Andersson <hean01@cendio.se> for Cendio AB
+   CredSSP layer and Kerberos support.
+   Copyright 2012-2017 Henrik Andersson <hean01@cendio.se> for Cendio AB
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -30,48 +30,15 @@ extern char *g_sc_container_name;
 static gss_OID_desc _gss_spnego_krb5_mechanism_oid_desc =
 	{ 9, (void *) "\x2a\x86\x48\x86\xf7\x12\x01\x02\x02" };
 
-
-static void
-s_realloc(STREAM s, unsigned int size)
-{
-	unsigned char *data;
-
-	if (s->size >= size)
-		return;
-
-	data = s->data;
-	s->size = size;
-	s->data = xrealloc(data, size);
-	s->p = s->data + (s->p - data);
-	s->end = s->data + (s->end - data);
-	s->iso_hdr = s->data + (s->iso_hdr - data);
-	s->mcs_hdr = s->data + (s->mcs_hdr - data);
-	s->sec_hdr = s->data + (s->sec_hdr - data);
-	s->rdp_hdr = s->data + (s->rdp_hdr - data);
-	s->channel_hdr = s->data + (s->channel_hdr - data);
-}
-
-static void
-s_free(STREAM s)
-{
-	free(s->data);
-	free(s);
-}
-
 static STREAM
 ber_wrap_hdr_data(int tagval, STREAM in)
 {
 	STREAM out;
 	int size = s_length(in) + 16;
 
-	out = xmalloc(sizeof(struct stream));
-	memset(out, 0, sizeof(struct stream));
-	out->data = xmalloc(size);
-	out->size = size;
-	out->p = out->data;
-
+	out = s_alloc(size);
 	ber_out_header(out, tagval, s_length(in));
-	out_uint8p(out, in->data, s_length(in));
+	out_stream(out, in);
 	s_mark_end(out);
 
 	return out;
@@ -84,10 +51,10 @@ cssp_gss_report_error(OM_uint32 code, char *str, OM_uint32 major_status, OM_uint
 	OM_uint32 msgctx = 0, ms;
 	gss_buffer_desc status_string;
 
-	error("GSS error [%d:%d:%d]: %s\n", (major_status & 0xff000000) >> 24,	// Calling error
-	      (major_status & 0xff0000) >> 16,	// Routine error
-	      major_status & 0xffff,	// Supplementary info bits
-	      str);
+	logger(Core, Debug, "GSS error [%d:%d:%d]: %s", (major_status & 0xff000000) >> 24,	// Calling error
+	       (major_status & 0xff0000) >> 16,	// Routine error
+	       major_status & 0xffff,	// Supplementary info bits
+	       str);
 
 	do
 	{
@@ -96,7 +63,7 @@ cssp_gss_report_error(OM_uint32 code, char *str, OM_uint32 major_status, OM_uint
 		if (ms != GSS_S_COMPLETE)
 			continue;
 
-		error(" - %s\n", status_string.value);
+		logger(Core, Debug, " - %s", status_string.value);
 
 	}
 	while (ms == GSS_S_COMPLETE && msgctx);
@@ -172,16 +139,19 @@ cssp_gss_get_service_name(char *server, gss_name_t * name)
 
 }
 
-static RD_BOOL
-cssp_gss_wrap(gss_ctx_id_t * ctx, STREAM in, STREAM out)
+static STREAM
+cssp_gss_wrap(gss_ctx_id_t ctx, STREAM in)
 {
 	int conf_state;
 	OM_uint32 major_status;
 	OM_uint32 minor_status;
 	gss_buffer_desc inbuf, outbuf;
+	STREAM out;
 
-	inbuf.value = in->data;
+	s_seek(in, 0);
 	inbuf.length = s_length(in);
+	in_uint8p(in, inbuf.value, s_length(in));
+	s_seek(in, 0);
 
 	major_status = gss_wrap(&minor_status, ctx, True,
 				GSS_C_QOP_DEFAULT, &inbuf, &conf_state, &outbuf);
@@ -190,37 +160,41 @@ cssp_gss_wrap(gss_ctx_id_t * ctx, STREAM in, STREAM out)
 	{
 		cssp_gss_report_error(GSS_C_GSS_CODE, "Failed to encrypt and sign message",
 				      major_status, minor_status);
-		return False;
+		return NULL;
 	}
 
 	if (!conf_state)
 	{
-		error("GSS Confidentiality failed, no encryption of message performed.");
-		return False;
+		logger(Core, Error,
+		       "cssp_gss_wrap(), GSS Confidentiality failed, no encryption of message performed.");
+		return NULL;
 	}
 
 	// write enc data to out stream
-	out->data = out->p = xmalloc(outbuf.length);
-	out->size = outbuf.length;
-	out_uint8p(out, outbuf.value, outbuf.length);
+	out = s_alloc(outbuf.length);
+	out_uint8a(out, outbuf.value, outbuf.length);
 	s_mark_end(out);
+	s_seek(out, 0);
 
 	gss_release_buffer(&minor_status, &outbuf);
 
-	return True;
+	return out;
 }
 
-static RD_BOOL
-cssp_gss_unwrap(gss_ctx_id_t * ctx, STREAM in, STREAM out)
+static STREAM
+cssp_gss_unwrap(gss_ctx_id_t ctx, STREAM in)
 {
 	OM_uint32 major_status;
 	OM_uint32 minor_status;
 	gss_qop_t qop_state;
 	gss_buffer_desc inbuf, outbuf;
 	int conf_state;
+	STREAM out;
 
-	inbuf.value = in->data;
+	s_seek(in, 0);
 	inbuf.length = s_length(in);
+	in_uint8p(in, inbuf.value, s_length(in));
+	s_seek(in, 0);
 
 	major_status = gss_unwrap(&minor_status, ctx, &inbuf, &outbuf, &conf_state, &qop_state);
 
@@ -228,28 +202,19 @@ cssp_gss_unwrap(gss_ctx_id_t * ctx, STREAM in, STREAM out)
 	{
 		cssp_gss_report_error(GSS_C_GSS_CODE, "Failed to decrypt message",
 				      major_status, minor_status);
-		return False;
+		return NULL;
 	}
 
-	out->data = out->p = xmalloc(outbuf.length);
-	out->size = outbuf.length;
-	out_uint8p(out, outbuf.value, outbuf.length);
+	out = s_alloc(outbuf.length);
+	out_uint8a(out, outbuf.value, outbuf.length);
 	s_mark_end(out);
+	s_seek(out, 0);
 
 	gss_release_buffer(&minor_status, &outbuf);
 
-	return True;
+	return out;
 }
 
-#ifdef WITH_DEBUG_CREDSSP
-void
-streamsave(STREAM s, char *fn)
-{
-	FILE *f = fopen(fn, "wb");
-	fwrite(s->data, s_length(s), 1, f);
-	fclose(f);
-}
-#endif
 
 static STREAM
 cssp_encode_tspasswordcreds(char *username, char *password, char *domain)
@@ -261,42 +226,41 @@ cssp_encode_tspasswordcreds(char *username, char *password, char *domain)
 	memset(&tmp, 0, sizeof(tmp));
 	memset(&message, 0, sizeof(message));
 
+	s_realloc(&tmp, 512 * 4);
+
 	// domainName [0]
-	s_realloc(&tmp, 4 + strlen(domain) * sizeof(uint16));
 	s_reset(&tmp);
-	rdp_out_unistr(&tmp, domain, strlen(domain) * sizeof(uint16));
+	out_utf16s(&tmp, domain);
 	s_mark_end(&tmp);
 	h2 = ber_wrap_hdr_data(BER_TAG_OCTET_STRING, &tmp);
 	h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 0, h2);
 	s_realloc(&message, s_length(&message) + s_length(h1));
-	out_uint8p(&message, h1->data, s_length(h1));
+	out_stream(&message, h1);
 	s_mark_end(&message);
 	s_free(h2);
 	s_free(h1);
 
 	// userName [1]
-	s_realloc(&tmp, 4 + strlen(username) * sizeof(uint16));
 	s_reset(&tmp);
-	rdp_out_unistr(&tmp, username, strlen(username) * sizeof(uint16));
+	out_utf16s(&tmp, username);
 	s_mark_end(&tmp);
 
 	h2 = ber_wrap_hdr_data(BER_TAG_OCTET_STRING, &tmp);
 	h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 1, h2);
 	s_realloc(&message, s_length(&message) + s_length(h1));
-	out_uint8p(&message, h1->data, s_length(h1));
+	out_stream(&message, h1);
 	s_mark_end(&message);
 	s_free(h2);
 	s_free(h1);
 
 	// password [2]
-	s_realloc(&tmp, 4 + strlen(password) * sizeof(uint16));
 	s_reset(&tmp);
-	rdp_out_unistr(&tmp, password, strlen(password) * sizeof(uint16));
+	out_utf16s(&tmp, password);
 	s_mark_end(&tmp);
 	h2 = ber_wrap_hdr_data(BER_TAG_OCTET_STRING, &tmp);
 	h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 2, h2);
 	s_realloc(&message, s_length(&message) + s_length(h1));
-	out_uint8p(&message, h1->data, s_length(h1));
+	out_stream(&message, h1);
 	s_mark_end(&message);
 	s_free(h2);
 	s_free(h1);
@@ -323,15 +287,16 @@ cssp_encode_tscspdatadetail(unsigned char keyspec, char *card, char *reader, cha
 	struct stream tmp = { 0 };
 	struct stream message = { 0 };
 
+	s_realloc(&tmp, 512 * 4);
+
 	// keySpec [0]
-	s_realloc(&tmp, sizeof(uint8));
 	s_reset(&tmp);
 	out_uint8(&tmp, keyspec);
 	s_mark_end(&tmp);
 	h2 = ber_wrap_hdr_data(BER_TAG_INTEGER, &tmp);
 	h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 0, h2);
 	s_realloc(&message, s_length(&message) + s_length(h1));
-	out_uint8p(&message, h1->data, s_length(h1));
+	out_stream(&message, h1);
 	s_mark_end(&message);
 	s_free(h2);
 	s_free(h1);
@@ -339,14 +304,13 @@ cssp_encode_tscspdatadetail(unsigned char keyspec, char *card, char *reader, cha
 	// cardName [1]
 	if (card)
 	{
-		s_realloc(&tmp, 4 + strlen(card) * sizeof(uint16));
 		s_reset(&tmp);
-		rdp_out_unistr(&tmp, card, strlen(card) * sizeof(uint16));
+		out_utf16s(&tmp, card);
 		s_mark_end(&tmp);
 		h2 = ber_wrap_hdr_data(BER_TAG_OCTET_STRING, &tmp);
 		h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 1, h2);
 		s_realloc(&message, s_length(&message) + s_length(h1));
-		out_uint8p(&message, h1->data, s_length(h1));
+		out_stream(&message, h1);
 		s_mark_end(&message);
 		s_free(h2);
 		s_free(h1);
@@ -355,14 +319,13 @@ cssp_encode_tscspdatadetail(unsigned char keyspec, char *card, char *reader, cha
 	// readerName [2]
 	if (reader)
 	{
-		s_realloc(&tmp, 4 + strlen(reader) * sizeof(uint16));
 		s_reset(&tmp);
-		rdp_out_unistr(&tmp, reader, strlen(reader) * sizeof(uint16));
+		out_utf16s(&tmp, reader);
 		s_mark_end(&tmp);
 		h2 = ber_wrap_hdr_data(BER_TAG_OCTET_STRING, &tmp);
 		h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 2, h2);
 		s_realloc(&message, s_length(&message) + s_length(h1));
-		out_uint8p(&message, h1->data, s_length(h1));
+		out_stream(&message, h1);
 		s_mark_end(&message);
 		s_free(h2);
 		s_free(h1);
@@ -371,14 +334,13 @@ cssp_encode_tscspdatadetail(unsigned char keyspec, char *card, char *reader, cha
 	// containerName [3]
 	if (container)
 	{
-		s_realloc(&tmp, 4 + strlen(container) * sizeof(uint16));
 		s_reset(&tmp);
-		rdp_out_unistr(&tmp, container, strlen(container) * sizeof(uint16));
+		out_utf16s(&tmp, container);
 		s_mark_end(&tmp);
 		h2 = ber_wrap_hdr_data(BER_TAG_OCTET_STRING, &tmp);
 		h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 3, h2);
 		s_realloc(&message, s_length(&message) + s_length(h1));
-		out_uint8p(&message, h1->data, s_length(h1));
+		out_stream(&message, h1);
 		s_mark_end(&message);
 		s_free(h2);
 		s_free(h1);
@@ -387,14 +349,13 @@ cssp_encode_tscspdatadetail(unsigned char keyspec, char *card, char *reader, cha
 	// cspName [4]
 	if (csp)
 	{
-		s_realloc(&tmp, 4 + strlen(csp) * sizeof(uint16));
 		s_reset(&tmp);
-		rdp_out_unistr(&tmp, csp, strlen(csp) * sizeof(uint16));
+		out_utf16s(&tmp, csp);
 		s_mark_end(&tmp);
 		h2 = ber_wrap_hdr_data(BER_TAG_OCTET_STRING, &tmp);
 		h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 4, h2);
 		s_realloc(&message, s_length(&message) + s_length(h1));
-		out_uint8p(&message, h1->data, s_length(h1));
+		out_stream(&message, h1);
 		s_mark_end(&message);
 		s_free(h2);
 		s_free(h1);
@@ -418,25 +379,26 @@ cssp_encode_tssmartcardcreds(char *username, char *password, char *domain)
 	struct stream tmp = { 0 };
 	struct stream message = { 0 };
 
+	s_realloc(&tmp, 512 * 4);
+
 	// pin [0]
-	s_realloc(&tmp, strlen(password) * sizeof(uint16));
 	s_reset(&tmp);
-	rdp_out_unistr(&tmp, password, strlen(password) * sizeof(uint16));
+	out_utf16s(&tmp, password);
 	s_mark_end(&tmp);
 	h2 = ber_wrap_hdr_data(BER_TAG_OCTET_STRING, &tmp);
 	h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 0, h2);
 	s_realloc(&message, s_length(&message) + s_length(h1));
-	out_uint8p(&message, h1->data, s_length(h1));
+	out_stream(&message, h1);
 	s_mark_end(&message);
 	s_free(h2);
 	s_free(h1);
 
-	// cspData[1]        
+	// cspData [1]
 	h2 = cssp_encode_tscspdatadetail(AT_KEYEXCHANGE, g_sc_card_name, g_sc_reader_name,
 					 g_sc_container_name, g_sc_csp_name);
 	h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 1, h2);
 	s_realloc(&message, s_length(&message) + s_length(h1));
-	out_uint8p(&message, h1->data, s_length(h1));
+	out_stream(&message, h1);
 	s_mark_end(&message);
 	s_free(h2);
 	s_free(h1);
@@ -444,14 +406,13 @@ cssp_encode_tssmartcardcreds(char *username, char *password, char *domain)
 	// userHint [2]
 	if (username && strlen(username))
 	{
-		s_realloc(&tmp, strlen(username) * sizeof(uint16));
 		s_reset(&tmp);
-		rdp_out_unistr(&tmp, username, strlen(username) * sizeof(uint16));
+		out_utf16s(&tmp, username);
 		s_mark_end(&tmp);
 		h2 = ber_wrap_hdr_data(BER_TAG_OCTET_STRING, &tmp);
 		h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 2, h2);
 		s_realloc(&message, s_length(&message) + s_length(h1));
-		out_uint8p(&message, h1->data, s_length(h1));
+		out_stream(&message, h1);
 		s_mark_end(&message);
 		s_free(h2);
 		s_free(h1);
@@ -460,14 +421,13 @@ cssp_encode_tssmartcardcreds(char *username, char *password, char *domain)
 	// domainHint [3]
 	if (domain && strlen(domain))
 	{
-		s_realloc(&tmp, strlen(domain) * sizeof(uint16));
 		s_reset(&tmp);
-		rdp_out_unistr(&tmp, domain, strlen(domain) * sizeof(uint16));
+		out_utf16s(&tmp, domain);
 		s_mark_end(&tmp);
 		h2 = ber_wrap_hdr_data(BER_TAG_OCTET_STRING, &tmp);
 		h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 3, h2);
 		s_realloc(&message, s_length(&message) + s_length(h1));
-		out_uint8p(&message, h1->data, s_length(h1));
+		out_stream(&message, h1);
 		s_mark_end(&message);
 		s_free(h2);
 		s_free(h1);
@@ -508,7 +468,7 @@ cssp_encode_tscredentials(char *username, char *password, char *domain)
 	h2 = ber_wrap_hdr_data(BER_TAG_INTEGER, &tmp);
 	h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 0, h2);
 	s_realloc(&message, s_length(&message) + s_length(h1));
-	out_uint8p(&message, h1->data, s_length(h1));
+	out_stream(&message, h1);
 	s_mark_end(&message);
 	s_free(h2);
 	s_free(h1);
@@ -526,7 +486,7 @@ cssp_encode_tscredentials(char *username, char *password, char *domain)
 	h2 = ber_wrap_hdr_data(BER_TAG_OCTET_STRING, h3);
 	h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 1, h2);
 	s_realloc(&message, s_length(&message) + s_length(h1));
-	out_uint8p(&message, h1->data, s_length(h1));
+	out_stream(&message, h1);
 	s_mark_end(&message);
 	s_free(h3);
 	s_free(h2);
@@ -534,12 +494,6 @@ cssp_encode_tscredentials(char *username, char *password, char *domain)
 
 	// Construct ASN.1 message
 	out = ber_wrap_hdr_data(BER_TAG_SEQUENCE | BER_TAG_CONSTRUCTED, &message);
-
-#if WITH_DEBUG_CREDSSP
-	streamsave(out, "tscredentials.raw");
-	printf("Out TSCredentials %ld bytes\n", s_length(out));
-	hexdump(out->data, s_length(out));
-#endif
 
 	// cleanup
 	xfree(message.data);
@@ -568,7 +522,7 @@ cssp_send_tsrequest(STREAM token, STREAM auth, STREAM pubkey)
 	h2 = ber_wrap_hdr_data(BER_TAG_INTEGER, &tmp);
 	h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 0, h2);
 	s_realloc(&message, s_length(&message) + s_length(h1));
-	out_uint8p(&message, h1->data, s_length(h1));
+	out_stream(&message, h1);
 	s_mark_end(&message);
 	s_free(h2);
 	s_free(h1);
@@ -582,7 +536,7 @@ cssp_send_tsrequest(STREAM token, STREAM auth, STREAM pubkey)
 		h2 = ber_wrap_hdr_data(BER_TAG_SEQUENCE | BER_TAG_CONSTRUCTED, h3);
 		h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 1, h2);
 		s_realloc(&message, s_length(&message) + s_length(h1));
-		out_uint8p(&message, h1->data, s_length(h1));
+		out_stream(&message, h1);
 		s_mark_end(&message);
 		s_free(h5);
 		s_free(h4);
@@ -598,7 +552,7 @@ cssp_send_tsrequest(STREAM token, STREAM auth, STREAM pubkey)
 		h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 2, h2);
 
 		s_realloc(&message, s_length(&message) + s_length(h1));
-		out_uint8p(&message, h1->data, s_length(h1));
+		out_stream(&message, h1);
 
 		s_free(h2);
 		s_free(h1);
@@ -611,7 +565,7 @@ cssp_send_tsrequest(STREAM token, STREAM auth, STREAM pubkey)
 		h1 = ber_wrap_hdr_data(BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 3, h2);
 
 		s_realloc(&message, s_length(&message) + s_length(h1));
-		out_uint8p(&message, h1->data, s_length(h1));
+		out_stream(&message, h1);
 		s_mark_end(&message);
 		s_free(h2);
 		s_free(h1);
@@ -622,17 +576,12 @@ cssp_send_tsrequest(STREAM token, STREAM auth, STREAM pubkey)
 	// Todo: can h1 be send directly instead of tcp_init() approach
 	h1 = ber_wrap_hdr_data(BER_TAG_SEQUENCE | BER_TAG_CONSTRUCTED, &message);
 	s = tcp_init(s_length(h1));
-	out_uint8p(s, h1->data, s_length(h1));
+	out_stream(s, h1);
 	s_mark_end(s);
 	s_free(h1);
 
-#if WITH_DEBUG_CREDSSP
-	streamsave(s, "tsrequest_out.raw");
-	printf("Out TSRequest %ld bytes\n", s_length(s));
-	hexdump(s->data, s_length(s));
-#endif
-
 	tcp_send(s);
+	s_free(s);
 
 	// cleanup
 	xfree(message.data);
@@ -642,101 +591,100 @@ cssp_send_tsrequest(STREAM token, STREAM auth, STREAM pubkey)
 }
 
 
-RD_BOOL
-cssp_read_tsrequest(STREAM token, STREAM pubkey)
+STREAM
+cssp_read_tsrequest(RD_BOOL pubkey)
 {
-	STREAM s;
+	STREAM s, out;
 	int length;
 	int tagval;
+	struct stream packet;
 
 	s = tcp_recv(NULL, 4);
 
 	if (s == NULL)
-		return False;
+		return NULL;
 
-	// verify ASN.1 header
-	if (s->p[0] != (BER_TAG_SEQUENCE | BER_TAG_CONSTRUCTED))
-	{
-		error("Expected BER_TAG_SEQUENCE|BER_TAG_CONSTRUCTED, got %x", s->p[0]);
-		return False;
-	}
+	// get and verify the header
+	if (!ber_in_header(s, &tagval, &length) ||
+	    tagval != (BER_TAG_SEQUENCE | BER_TAG_CONSTRUCTED))
+		return NULL;
 
-	// peek at first 4 bytes to get full message length
-	if (s->p[1] < 0x80)
-		length = s->p[1] - 2;
-	else if (s->p[1] == 0x81)
-		length = s->p[2] - 1;
-	else if (s->p[1] == 0x82)
-		length = (s->p[2] << 8) | s->p[3];
-	else
-		return False;
+	// We've already read 4 bytes, but the header might have been
+	// less than that, so we need to adjust the length
+	length -= s_remaining(s);
 
 	// receive the remainings of message
 	s = tcp_recv(s, length);
-
-#if WITH_DEBUG_CREDSSP
-	streamsave(s, "tsrequest_in.raw");
-	printf("In TSRequest token %ld bytes\n", s_length(s));
-	hexdump(s->data, s_length(s));
-#endif
-
-	// parse the response and into nego token
-	if (!ber_in_header(s, &tagval, &length) ||
-	    tagval != (BER_TAG_SEQUENCE | BER_TAG_CONSTRUCTED))
-		return False;
+	if (s == NULL)
+		return NULL;
+	packet = *s;
 
 	// version [0]
 	if (!ber_in_header(s, &tagval, &length) ||
 	    tagval != (BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 0))
-		return False;
+		return NULL;
+
+	if (!s_check_rem(s, length))
+	{
+		 rdp_protocol_error("consume of version from stream would overrun",
+				    &packet);
+	}
 	in_uint8s(s, length);
 
 	// negoToken [1]
-	if (token)
+	if (!pubkey)
 	{
 		if (!ber_in_header(s, &tagval, &length)
 		    || tagval != (BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 1))
-			return False;
+			return NULL;
 		if (!ber_in_header(s, &tagval, &length)
 		    || tagval != (BER_TAG_SEQUENCE | BER_TAG_CONSTRUCTED))
-			return False;
+			return NULL;
 		if (!ber_in_header(s, &tagval, &length)
 		    || tagval != (BER_TAG_SEQUENCE | BER_TAG_CONSTRUCTED))
-			return False;
+			return NULL;
 		if (!ber_in_header(s, &tagval, &length)
 		    || tagval != (BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 0))
-			return False;
+			return NULL;
 
 		if (!ber_in_header(s, &tagval, &length) || tagval != BER_TAG_OCTET_STRING)
-			return False;
+			return NULL;
 
-		token->end = token->p = token->data;
-		out_uint8p(token, s->p, length);
-		s_mark_end(token);
+		if (!s_check_rem(s, length))
+		{
+			rdp_protocol_error("consume of token from stream would overrun",
+					   &packet);
+		}
+
+		out = s_alloc(length);
+		out_uint8stream(out, s, length);
+		s_mark_end(out);
+		s_seek(out, 0);
 	}
-
 	// pubKey [3]
-	if (pubkey)
+	else
 	{
 		if (!ber_in_header(s, &tagval, &length)
 		    || tagval != (BER_TAG_CTXT_SPECIFIC | BER_TAG_CONSTRUCTED | 3))
-			return False;
+			return NULL;
 
 		if (!ber_in_header(s, &tagval, &length) || tagval != BER_TAG_OCTET_STRING)
-			return False;
+			return NULL;
 
-		pubkey->data = pubkey->p = s->p;
-		pubkey->end = pubkey->data + length;
-		pubkey->size = length;
+		out = s_alloc(length);
+		out_uint8stream(out, s, length);
+		s_mark_end(out);
+		s_seek(out, 0);
 	}
 
 
-	return True;
+	return out;
 }
 
 RD_BOOL
 cssp_connect(char *server, char *user, char *domain, char *password, STREAM s)
 {
+	UNUSED(s);
 	OM_uint32 actual_time;
 	gss_cred_id_t cred;
 	gss_buffer_desc input_tok, output_tok;
@@ -747,45 +695,50 @@ cssp_connect(char *server, char *user, char *domain, char *password, STREAM s)
 	gss_OID desired_mech = &_gss_spnego_krb5_mechanism_oid_desc;
 
 	STREAM ts_creds;
-	struct stream token = { 0 };
-	struct stream pubkey = { 0 };
-	struct stream pubkey_cmp = { 0 };
+	STREAM token;
+	STREAM pubkey, pubkey_cmp;
+	unsigned char *pubkey_data;
+	unsigned char *pubkey_cmp_data;
+	unsigned char first_byte;
+
+	RD_BOOL ret;
+	STREAM blob;
 
 	// Verify that system gss support spnego
 	if (!cssp_gss_mech_available(desired_mech))
 	{
-		warning("CredSSP: System doesn't have support for desired authentication mechanism.\n");
+		logger(Core, Debug,
+		       "cssp_connect(), system doesn't have support for desired authentication mechanism");
 		return False;
 	}
 
 	// Get service name
 	if (!cssp_gss_get_service_name(server, &target_name))
 	{
-		warning("CredSSP: Failed to get target service name.\n");
+		logger(Core, Debug, "cssp_connect(), failed to get target service name");
 		return False;
 	}
 
-	// Establish tls connection to server
+	// Establish TLS connection to server
 	if (!tcp_tls_connect())
 	{
-		warning("CredSSP: Failed to establish TLS connection.\n");
+		logger(Core, Debug, "cssp_connect(), failed to establish TLS connection");
 		return False;
 	}
 
-	tcp_tls_get_server_pubkey(&pubkey);
-
-#ifdef WITH_DEBUG_CREDSSP
-	streamsave(&pubkey, "PubKey.raw");
-#endif
+	pubkey = tcp_tls_get_server_pubkey();
+	if (pubkey == NULL)
+		return False;
+	pubkey_cmp = NULL;
 
 	// Enter the spnego loop
 	OM_uint32 actual_services;
 	gss_OID actual_mech;
-	struct stream blob = { 0 };
 
 	gss_ctx = GSS_C_NO_CONTEXT;
 	cred = GSS_C_NO_CREDENTIAL;
 
+	token = NULL;
 	input_tok.length = 0;
 	output_tok.length = 0;
 	minor_status = 0;
@@ -806,63 +759,73 @@ cssp_connect(char *server, char *user, char *domain, char *password, STREAM s)
 						    &actual_mech,
 						    &output_tok, &actual_services, &actual_time);
 
+		// input_tok might have pointed to token's data,
+		// but it's safe to free it now after the call
+		s_free(token);
+		token = NULL;
+
 		if (GSS_ERROR(major_status))
 		{
 			if (i == 0)
-				error("CredSSP: Initialize failed, do you have correct kerberos tgt initialized ?\n");
+				logger(Core, Notice,
+				       "Failed to initialize NLA, do you have correct Kerberos TGT initialized ?");
 			else
-				error("CredSSP: Negotiation failed.\n");
+				logger(Core, Error, "cssp_connect(), negotiation failed");
 
-#ifdef WITH_DEBUG_CREDSSP
-			cssp_gss_report_error(GSS_C_GSS_CODE, "CredSSP: SPNEGO negotiation failed.",
+			cssp_gss_report_error(GSS_C_GSS_CODE, "cssp_connect(), negotiation failed.",
 					      major_status, minor_status);
-#endif
 			goto bail_out;
 		}
 
 		// validate required services
 		if (!(actual_services & GSS_C_CONF_FLAG))
 		{
-			error("CredSSP: Confidiality service required but is not available.\n");
+			logger(Core, Error,
+			       "cssp_connect(), confidentiality service required but is not available");
 			goto bail_out;
 		}
 
 		// Send token to server
 		if (output_tok.length != 0)
 		{
-			if (output_tok.length > token.size)
-				s_realloc(&token, output_tok.length);
-			s_reset(&token);
+			token = s_alloc(output_tok.length);
+			out_uint8a(token, output_tok.value, output_tok.length);
+			s_mark_end(token);
 
-			out_uint8p(&token, output_tok.value, output_tok.length);
-			s_mark_end(&token);
+			ret = cssp_send_tsrequest(token, NULL, NULL);
 
-			if (!cssp_send_tsrequest(&token, NULL, NULL))
-				goto bail_out;
-
+			s_free(token);
+			token = NULL;
 			(void) gss_release_buffer(&minor_status, &output_tok);
+
+			if (!ret)
+				goto bail_out;
 		}
 
 		// Read token from server
 		if (major_status & GSS_S_CONTINUE_NEEDED)
 		{
-			(void) gss_release_buffer(&minor_status, &input_tok);
-
-			if (!cssp_read_tsrequest(&token, NULL))
+			token = cssp_read_tsrequest(False);
+			if (token == NULL)
 				goto bail_out;
 
-			input_tok.value = token.data;
-			input_tok.length = s_length(&token);
+			input_tok.length = s_length(token);
+			in_uint8p(token, input_tok.value, input_tok.length);
 		}
 		else
 		{
 			// Send encrypted pubkey for verification to server
 			context_established = 1;
 
-			if (!cssp_gss_wrap(gss_ctx, &pubkey, &blob))
+			blob = cssp_gss_wrap(gss_ctx, pubkey);
+			if (blob == NULL)
 				goto bail_out;
 
-			if (!cssp_send_tsrequest(NULL, NULL, &blob))
+			ret = cssp_send_tsrequest(NULL, NULL, blob);
+
+			s_free(blob);
+
+			if (!ret)
 				goto bail_out;
 
 			context_established = 1;
@@ -873,37 +836,62 @@ cssp_connect(char *server, char *user, char *domain, char *password, STREAM s)
 	}
 	while (!context_established);
 
+	s_free(token);
+
 	// read tsrequest response and decrypt for public key validation
-	if (!cssp_read_tsrequest(NULL, &blob))
+	blob = cssp_read_tsrequest(True);
+	if (blob == NULL)
 		goto bail_out;
 
-	if (!cssp_gss_unwrap(gss_ctx, &blob, &pubkey_cmp))
+	pubkey_cmp = cssp_gss_unwrap(gss_ctx, blob);
+	s_free(blob);
+	if (pubkey_cmp == NULL)
 		goto bail_out;
 
-	pubkey_cmp.data[0] -= 1;
+	// the first byte gets 1 added before being sent by the server
+	// in order to protect against replays of the data sent earlier
+	// by the client
+	in_uint8(pubkey_cmp, first_byte);
+	s_seek(pubkey_cmp, 0);
+	out_uint8(pubkey_cmp, first_byte - 1);
+	s_seek(pubkey_cmp, 0);
 
 	// validate public key
-	if (memcmp(pubkey.data, pubkey_cmp.data, s_length(&pubkey)) != 0)
+	in_uint8p(pubkey, pubkey_data, s_length(pubkey));
+	in_uint8p(pubkey_cmp, pubkey_cmp_data, s_length(pubkey_cmp));
+	if ((s_length(pubkey) != s_length(pubkey_cmp)) ||
+	    (memcmp(pubkey_data, pubkey_cmp_data, s_length(pubkey)) != 0))
 	{
-		error("CredSSP: Cannot guarantee integrity of server connection, MITM ? "
-		      "(public key data mismatch)\n");
+		logger(Core, Error,
+		       "cssp_connect(), public key mismatch, cannot guarantee integrity of server connection");
 		goto bail_out;
 	}
+
+	s_free(pubkey);
+	s_free(pubkey_cmp);
 
 	// Send TSCredentials
 	ts_creds = cssp_encode_tscredentials(user, password, domain);
 
-	if (!cssp_gss_wrap(gss_ctx, ts_creds, &blob))
-		goto bail_out;
+	blob = cssp_gss_wrap(gss_ctx, ts_creds);
 
 	s_free(ts_creds);
 
-	if (!cssp_send_tsrequest(NULL, &blob, NULL))
+	if (blob == NULL)
+		goto bail_out;
+
+	ret = cssp_send_tsrequest(NULL, blob, NULL);
+
+	s_free(blob);
+
+	if (!ret)
 		goto bail_out;
 
 	return True;
 
       bail_out:
-	xfree(token.data);
+	s_free(token);
+	s_free(pubkey);
+	s_free(pubkey_cmp);
 	return False;
 }

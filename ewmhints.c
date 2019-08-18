@@ -41,7 +41,7 @@ static Atom g_net_wm_state_maximized_vert_atom, g_net_wm_state_maximized_horz_at
 Atom g_net_wm_state_atom, g_net_wm_desktop_atom, g_net_wm_ping_atom;
 
 /* 
-   Get window property value (32 bit format) 
+   Get window property value (32-bit format) 
    Returns zero on success, -1 on error
 */
 static int
@@ -57,7 +57,7 @@ get_property_value(Window wnd, char *propname, long max_length,
 	property = XInternAtom(g_display, propname, True);
 	if (property == None)
 	{
-		fprintf(stderr, "Atom %s does not exist\n", propname);
+		logger(GUI, Error, "get_property_value(), atom '%s' does not exist", propname);
 		return (-1);
 	}
 
@@ -71,26 +71,27 @@ get_property_value(Window wnd, char *propname, long max_length,
 
 	if (result != Success)
 	{
-		fprintf(stderr, "XGetWindowProperty failed\n");
+		logger(GUI, Error, "get_property_value(), XGetWindowProperty failed");
 		return (-1);
 	}
 
 	if (actual_type_return == None || actual_format_return == 0)
 	{
 		if (!nowarn)
-			fprintf(stderr, "Window is missing property %s\n", propname);
+			logger(GUI, Error, "get_property_value(), window is missing atom '%s'",
+			       propname);
 		return (-1);
 	}
 
 	if (bytes_after_return)
 	{
-		fprintf(stderr, "%s is too big for me\n", propname);
+		logger(GUI, Error, "get_property_value(), atom '%s' is too big for me", propname);
 		return (-1);
 	}
 
 	if (actual_format_return != 32)
 	{
-		fprintf(stderr, "%s has bad format\n", propname);
+		logger(GUI, Error, "get_property_value(), atom '%s' has bad format", propname);
 		return (-1);
 	}
 
@@ -115,7 +116,7 @@ get_current_desktop(void)
 
 	if (nitems_return != 1)
 	{
-		fprintf(stderr, "_NET_CURRENT_DESKTOP has bad length\n");
+		logger(GUI, Error, "get_current_desktop(), _NET_CURRENT_DESKTOP has bad length");
 		return (-1);
 	}
 
@@ -149,7 +150,7 @@ get_current_workarea(uint32 * x, uint32 * y, uint32 * width, uint32 * height)
 
 	if (nitems_return % 4)
 	{
-		fprintf(stderr, "_NET_WORKAREA has odd length\n");
+		logger(GUI, Error, "get_current_workarea(),_NET_WORKAREA has bad length");
 		return (-1);
 	}
 
@@ -200,7 +201,7 @@ ewmh_init()
 /* 
    Get the window state: normal/minimized/maximized. 
 */
-#ifndef MAKE_PROTO
+
 int
 ewmh_get_window_state(Window w)
 {
@@ -245,7 +246,7 @@ ewmh_modify_state(Window wnd, int add, Atom atom1, Atom atom2)
 	XEvent xevent;
 
 	int result;
-	unsigned long nitems;
+	unsigned long i, nitems;
 	unsigned char *props;
 	uint32 state = WithdrawnState;
 
@@ -280,7 +281,6 @@ ewmh_modify_state(Window wnd, int add, Atom atom1, Atom atom2)
 		else
 		{
 			Atom *atoms;
-			int i;
 
 			if (get_property_value(wnd, "_NET_WM_STATE", 64, &nitems, &props, 1) < 0)
 				return 0;
@@ -369,7 +369,7 @@ ewmh_get_window_desktop(Window wnd)
 
 	if (nitems_return != 1)
 	{
-		fprintf(stderr, "_NET_WM_DESKTOP has bad length\n");
+		logger(GUI, Error, "ewmh_get_window_desktop(), _NET_WM_DESKTOP has bad length");
 		return (-1);
 	}
 
@@ -437,7 +437,7 @@ ewmh_set_window_modal(Window wnd)
 }
 
 void
-ewmh_set_icon(Window wnd, int width, int height, const char *rgba_data)
+ewmh_set_icon(Window wnd, uint32 width, uint32 height, const char *rgba_data)
 {
 	unsigned long nitems, i;
 	unsigned char *props;
@@ -480,7 +480,7 @@ ewmh_set_icon(Window wnd, int width, int height, const char *rgba_data)
 	icon[1] = height;
 
 	/* Convert RGBA -> ARGB */
-	for (i = 0; i < width * height; i++)
+	for (i = 0; i < (width * height); i++)
 	{
 		icon[i + 2] =
 			rgba_data[i * 4 + 3] << 24 |
@@ -499,7 +499,7 @@ ewmh_set_icon(Window wnd, int width, int height, const char *rgba_data)
 }
 
 void
-ewmh_del_icon(Window wnd, int width, int height)
+ewmh_del_icon(Window wnd, uint32 width, uint32 height)
 {
 	unsigned long nitems, i, icon_size;
 	unsigned char *props;
@@ -578,9 +578,6 @@ ewmh_is_window_above(Window w)
 
 	return above;
 }
-
-#endif /* MAKE_PROTO */
-
 
 #if 0
 

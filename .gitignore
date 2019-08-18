@@ -1,0 +1,9 @@
+rdesktop
+autom4te.cache
+/Makefile
+config.log
+config.status
+configure
+rdesktop*.tar.gz
+aclocal.m4
+*.o

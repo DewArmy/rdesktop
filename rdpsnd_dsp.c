@@ -2,6 +2,7 @@
    rdesktop: A Remote Desktop Protocol client.
    Sound DSP routines
    Copyright (C) Michael Gernoth <mike@zerfleddert.de> 2006-2008
+   Copyright 2017 Henrik Andersson <hean01@cendio.se> for Cendio AB
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -45,7 +46,7 @@ rdpsnd_dsp_softvol_set(uint16 left, uint16 right)
 {
 	softvol_left = left;
 	softvol_right = right;
-	DEBUG(("rdpsnd_dsp_softvol_set: left: %u, right: %u\n", left, right));
+	logger(Sound, Debug, "rdpsnd_dsp_softvol_set(), left: %u, right: %u\n", left, right);
 }
 
 void
@@ -105,8 +106,9 @@ rdpsnd_dsp_softvol(unsigned char *buffer, unsigned int size, RD_WAVEFORMATEX * f
 		}
 	}
 
-	DEBUG(("using softvol with factors left: %d, right: %d (%d/%d)\n", factor_left,
-	       factor_right, format->wBitsPerSample, format->nChannels));
+	logger(Sound, Debug,
+	       "rdpsnd_dsp_softvol(), using softvol with factors left: %d, right: %d (%d/%d)",
+	       factor_left, factor_right, format->wBitsPerSample, format->nChannels);
 }
 
 void
@@ -119,7 +121,7 @@ rdpsnd_dsp_swapbytes(unsigned char *buffer, unsigned int size, RD_WAVEFORMATEX *
 		return;
 
 	if (size & 0x1)
-		warning("badly aligned sound data");
+		logger(Sound, Warning, "rdpsnd_dsp_swapbytes(), badly aligned sound data");
 
 	for (i = 0; i < (int) size; i += 2)
 	{
@@ -152,7 +154,7 @@ rdpsnd_dsp_resample_set(uint32 device_srate, uint16 device_bitspersample, uint16
 
 	if ((src_converter = src_new(SRC_CONVERTER, device_channels, &err)) == NULL)
 	{
-		warning("src_new failed: %d!\n", err);
+		logger(Sound, Warning, "rdpsnd_dsp_resample_set(), src_new() failed with %d", err);
 		return False;
 	}
 #endif
@@ -173,10 +175,11 @@ rdpsnd_dsp_resample_supported(RD_WAVEFORMATEX * format)
 	return True;
 }
 
-uint32
-rdpsnd_dsp_resample(unsigned char **out, unsigned char *in, unsigned int size,
+STREAM
+rdpsnd_dsp_resample(unsigned char *in, unsigned int size,
 		    RD_WAVEFORMATEX * format, RD_BOOL stream_be)
 {
+	UNUSED(stream_be);
 #ifdef HAVE_LIBSAMPLERATE
 	SRC_DATA resample_data;
 	float *infloat, *outfloat;
@@ -187,13 +190,15 @@ rdpsnd_dsp_resample(unsigned char **out, unsigned char *in, unsigned int size,
 	int innum, outnum;
 	unsigned char *tmpdata = NULL, *tmp = NULL;
 	int samplewidth = format->wBitsPerSample / 8;
+	STREAM out;
 	int outsize = 0;
+	unsigned char *data;
 	int i;
 
 	if ((resample_to_bitspersample == format->wBitsPerSample) &&
 	    (resample_to_channels == format->nChannels) &&
 	    (resample_to_srate == format->nSamplesPerSec))
-		return 0;
+		return NULL;
 
 #ifdef B_ENDIAN
 	if (!stream_be)
@@ -225,12 +230,12 @@ rdpsnd_dsp_resample(unsigned char **out, unsigned char *in, unsigned int size,
 	}
 
 
-	/* Expand 8bit input-samples to 16bit */
-#ifndef HAVE_LIBSAMPLERATE	/* libsamplerate needs 16bit samples */
+	/* Expand 8-bit input-samples to 16-bit */
+#ifndef HAVE_LIBSAMPLERATE	/* libsamplerate needs 16-bit samples */
 	if (format->wBitsPerSample != resample_to_bitspersample)
 #endif
 	{
-		/* source: 8 bit, dest: 16bit */
+		/* source: 8 bit, dest: 16 bit */
 		if (format->wBitsPerSample == 8)
 		{
 			tmp = tmpdata;
@@ -255,8 +260,9 @@ rdpsnd_dsp_resample(unsigned char **out, unsigned char *in, unsigned int size,
 #ifdef HAVE_LIBSAMPLERATE
 	if (src_converter == NULL)
 	{
-		warning("no samplerate converter available!\n");
-		return 0;
+		logger(Sound, Warning,
+		       "rdpsndp_dsp_resample_set(), no sample rate converter available");
+		return NULL;
 	}
 
 	outnum = ((float) innum * ((float) resample_to_srate / (float) format->nSamplesPerSec)) + 1;
@@ -275,13 +281,15 @@ rdpsnd_dsp_resample(unsigned char **out, unsigned char *in, unsigned int size,
 	resample_data.end_of_input = 0;
 
 	if ((err = src_process(src_converter, &resample_data)) != 0)
-		error("src_process: %s", src_strerror(err));
+		logger(Sound, Warning, "rdpsnd_dsp_resample_set(), src_process(): '%s'",
+		       src_strerror(err));
 
 	xfree(infloat);
 
 	outsize = resample_data.output_frames_gen * resample_to_channels * samplewidth;
-	*out = (unsigned char *) xmalloc(outsize);
-	src_float_to_short_array(outfloat, (short *) *out,
+	out = s_alloc(outsize);
+	out_uint8p(out, data, outsize);
+	src_float_to_short_array(outfloat, (short *) data,
 				 resample_data.output_frames_gen * resample_to_channels);
 	xfree(outfloat);
 
@@ -289,15 +297,17 @@ rdpsnd_dsp_resample(unsigned char **out, unsigned char *in, unsigned int size,
 	/* Michaels simple linear resampler */
 	if (resample_to_srate < format->nSamplesPerSec)
 	{
-		warning("downsampling currently not supported!\n");
+		logger(Sound, Warning,
+		       "rdpsnd_dsp_reasmple_set(), downsampling currently not supported");
 		return 0;
 	}
 
 	outnum = (innum * ratio1k) / 1000;
 
 	outsize = outnum * samplewidth;
-	*out = (unsigned char *) xmalloc(outsize);
-	bzero(*out, outsize);
+	out = s_alloc(outsize);
+	out_uint8p(out, data, outsize);
+	bzero(data, outsize);
 
 	for (i = 0; i < outsize / (resample_to_channels * samplewidth); i++)
 	{
@@ -325,7 +335,7 @@ rdpsnd_dsp_resample(unsigned char **out, unsigned char *in, unsigned int size,
 
 				cval1 += (sint8) (cval2 * part) / 100;
 
-				memcpy(*out + (i * resample_to_channels * samplewidth) +
+				memcpy(data + (i * resample_to_channels * samplewidth) +
 				       (samplewidth * j), &cval1, samplewidth);
 			}
 		}
@@ -343,14 +353,14 @@ rdpsnd_dsp_resample(unsigned char **out, unsigned char *in, unsigned int size,
 
 				sval1 += (sint16) (sval2 * part) / 100;
 
-				memcpy(*out + (i * resample_to_channels * samplewidth) +
+				memcpy(data + (i * resample_to_channels * samplewidth) +
 				       (samplewidth * j), &sval1, samplewidth);
 			}
 		}
 #else /* Nearest neighbor search */
 		for (j = 0; j < resample_to_channels; j++)
 		{
-			memcpy(*out + (i * resample_to_channels * samplewidth) + (samplewidth * j),
+			memcpy(out + (i * resample_to_channels * samplewidth) + (samplewidth * j),
 			       in + (source * resample_to_channels * samplewidth) +
 			       (samplewidth * j), samplewidth);
 		}
@@ -362,8 +372,8 @@ rdpsnd_dsp_resample(unsigned char **out, unsigned char *in, unsigned int size,
 	if (tmpdata != NULL)
 		xfree(tmpdata);
 
-	/* Shrink 16bit output-samples to 8bit */
-#ifndef HAVE_LIBSAMPLERATE	/* libsamplerate produces 16bit samples */
+	/* Shrink 16-bit output-samples to 8-bit */
+#ifndef HAVE_LIBSAMPLERATE	/* libsamplerate produces 16-bit samples */
 	if (format->wBitsPerSample != resample_to_bitspersample)
 #endif
 	{
@@ -372,7 +382,7 @@ rdpsnd_dsp_resample(unsigned char **out, unsigned char *in, unsigned int size,
 		{
 			for (i = 0; i < outsize; i++)
 			{
-				*out[i] = *out[i * 2];
+				data[i] = data[i * 2];
 			}
 			outsize /= 2;
 		}
@@ -380,16 +390,17 @@ rdpsnd_dsp_resample(unsigned char **out, unsigned char *in, unsigned int size,
 
 #ifdef B_ENDIAN
 	if (!stream_be)
-		rdpsnd_dsp_swapbytes(*out, outsize, format);
+		rdpsnd_dsp_swapbytes(data, outsize, format);
 #endif
-	return outsize;
+
+	return out;
 }
 
 STREAM
 rdpsnd_dsp_process(unsigned char *data, unsigned int size, struct audio_driver * current_driver,
 		   RD_WAVEFORMATEX * format)
 {
-	static struct stream out;
+	STREAM out;
 	RD_BOOL stream_be = False;
 
 	/* softvol and byteswap do not change the amount of data they
@@ -405,20 +416,19 @@ rdpsnd_dsp_process(unsigned char *data, unsigned int size, struct audio_driver *
 	}
 #endif
 
-	out.data = NULL;
+	out = NULL;
 
 	if (current_driver->need_resampling)
-		out.size = rdpsnd_dsp_resample(&out.data, data, size, format, stream_be);
+		out = rdpsnd_dsp_resample(data, size, format, stream_be);
 
-	if (out.data == NULL)
+	if (out == NULL)
 	{
-		out.data = (unsigned char *) xmalloc(size);
-		memcpy(out.data, data, size);
-		out.size = size;
+		out = s_alloc(size);
+		out_uint8a(out, data, size);
 	}
 
-	out.p = out.data;
-	out.end = out.p + out.size;
+	s_mark_end(out);
+	s_seek(out, 0);
 
-	return &out;
+	return out;
 }

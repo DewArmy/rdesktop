@@ -33,10 +33,10 @@
 #define MAX_FRAMES	32
 
 static struct pollfd pfds_out[32];
-static int num_fds_out;
+static size_t num_fds_out;
 
 static struct pollfd pfds_in[32];
-static int num_fds_in;
+static size_t num_fds_in;
 
 static snd_pcm_t *out_handle = NULL;
 static snd_pcm_t *in_handle = NULL;
@@ -59,6 +59,7 @@ void alsa_record(void);
 void
 alsa_add_fds(int *n, fd_set * rfds, fd_set * wfds, struct timeval *tv)
 {
+	UNUSED(tv);
 	int err;
 	struct pollfd *f;
 
@@ -168,27 +169,26 @@ alsa_set_format(snd_pcm_t * pcm, RD_WAVEFORMATEX * pwfx)
 	snd_pcm_hw_params_t *hwparams = NULL;
 	int err;
 	unsigned int buffertime;
-	short samplewidth;
-	int audiochannels;
 	unsigned int rate;
-
-	samplewidth = pwfx->wBitsPerSample / 8;
 
 	if ((err = snd_pcm_hw_params_malloc(&hwparams)) < 0)
 	{
-		error("snd_pcm_hw_params_malloc: %s\n", snd_strerror(err));
+		logger(Sound, Error, "alsa_set_format(), snd_pcm_hw_params_malloc() failed: %s",
+		       snd_strerror(err));
 		return False;
 	}
 
 	if ((err = snd_pcm_hw_params_any(pcm, hwparams)) < 0)
 	{
-		error("snd_pcm_hw_params_any: %s\n", snd_strerror(err));
+		logger(Sound, Error, "alsa_set_format(), snd_pcm_hw_params_any() failed: %s",
+		       snd_strerror(err));
 		return False;
 	}
 
 	if ((err = snd_pcm_hw_params_set_access(pcm, hwparams, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0)
 	{
-		error("snd_pcm_hw_params_set_access: %s\n", snd_strerror(err));
+		logger(Sound, Error, "alsa_set_format(), snd_pcm_hw_params_set_access() failed: %s",
+		       snd_strerror(err));
 		return False;
 	}
 
@@ -196,7 +196,9 @@ alsa_set_format(snd_pcm_t * pcm, RD_WAVEFORMATEX * pwfx)
 	{
 		if ((err = snd_pcm_hw_params_set_format(pcm, hwparams, SND_PCM_FORMAT_S16_LE)) < 0)
 		{
-			error("snd_pcm_hw_params_set_format: %s\n", snd_strerror(err));
+			logger(Sound, Error,
+			       "alsa_set_format(), snd_pcm_hw_params_set_format() failed: %s",
+			       snd_strerror(err));
 			return False;
 		}
 	}
@@ -204,7 +206,9 @@ alsa_set_format(snd_pcm_t * pcm, RD_WAVEFORMATEX * pwfx)
 	{
 		if ((err = snd_pcm_hw_params_set_format(pcm, hwparams, SND_PCM_FORMAT_S8)) < 0)
 		{
-			error("snd_pcm_hw_params_set_format: %s\n", snd_strerror(err));
+			logger(Sound, Error,
+			       "alsa_set_format(), snd_pcm_hw_params_set_format() failed: %s",
+			       snd_strerror(err));
 			return False;
 		}
 	}
@@ -212,7 +216,9 @@ alsa_set_format(snd_pcm_t * pcm, RD_WAVEFORMATEX * pwfx)
 #if 0
 	if ((err = snd_pcm_hw_params_set_rate_resample(pcm, hwparams, 1)) < 0)
 	{
-		error("snd_pcm_hw_params_set_rate_resample: %s\n", snd_strerror(err));
+		logger(Sound, Error,
+		       "alsa_set_format(), snd_pcm_hw_params_set_rate_resample() failed: %s",
+		       snd_strerror(err));
 		return False;
 	}
 #endif
@@ -220,14 +226,17 @@ alsa_set_format(snd_pcm_t * pcm, RD_WAVEFORMATEX * pwfx)
 	rate = pwfx->nSamplesPerSec;
 	if ((err = snd_pcm_hw_params_set_rate_near(pcm, hwparams, &rate, 0)) < 0)
 	{
-		error("snd_pcm_hw_params_set_rate_near: %s\n", snd_strerror(err));
+		logger(Sound, Error,
+		       "alsa_set_format(), snd_pcm_hw_params_set_rate_near() failed: %s",
+		       snd_strerror(err));
 		return False;
 	}
 
-	audiochannels = pwfx->nChannels;
 	if ((err = snd_pcm_hw_params_set_channels(pcm, hwparams, pwfx->nChannels)) < 0)
 	{
-		error("snd_pcm_hw_params_set_channels: %s\n", snd_strerror(err));
+		logger(Sound, Error,
+		       "alsa_set_format(), snd_pcm_hw_params_set_channels() failed: %s",
+		       snd_strerror(err));
 		return False;
 	}
 
@@ -235,13 +244,16 @@ alsa_set_format(snd_pcm_t * pcm, RD_WAVEFORMATEX * pwfx)
 	buffertime = 500000;	/* microseconds */
 	if ((err = snd_pcm_hw_params_set_buffer_time_near(pcm, hwparams, &buffertime, 0)) < 0)
 	{
-		error("snd_pcm_hw_params_set_buffer_time_near: %s\n", snd_strerror(err));
+		logger(Sound, Error,
+		       "alsa_set_format(), snd_pcm_hw_params_set_buffer_time_near() failed: %s",
+		       snd_strerror(err));
 		return False;
 	}
 
 	if ((err = snd_pcm_hw_params(pcm, hwparams)) < 0)
 	{
-		error("snd_pcm_hw_params: %s\n", snd_strerror(err));
+		logger(Sound, Error, "alsa_set_format(), snd_pcm_hw_params(): %s",
+		       snd_strerror(err));
 		return False;
 	}
 
@@ -249,7 +261,8 @@ alsa_set_format(snd_pcm_t * pcm, RD_WAVEFORMATEX * pwfx)
 
 	if ((err = snd_pcm_prepare(pcm)) < 0)
 	{
-		error("snd_pcm_prepare: %s\n", snd_strerror(err));
+		logger(Sound, Error, "alsa_set_format(), snd_pcm_prepare() failed: %s\n",
+		       snd_strerror(err));
 		return False;
 	}
 
@@ -265,7 +278,8 @@ alsa_open_out(void)
 
 	if ((err = snd_pcm_open(&out_handle, pcm_name, SND_PCM_STREAM_PLAYBACK, 0)) < 0)
 	{
-		error("snd_pcm_open: %s\n", snd_strerror(err));
+		logger(Sound, Error, "alsa_open_out(), snd_pcm_open() failed: %s",
+		       snd_strerror(err));
 		return False;
 	}
 
@@ -297,13 +311,17 @@ alsa_format_supported(RD_WAVEFORMATEX * pwfx)
 
 	if ((err = snd_pcm_hw_params_malloc(&hwparams)) < 0)
 	{
-		error("snd_pcm_hw_params_malloc: %s\n", snd_strerror(err));
+		logger(Sound, Error,
+		       "alsa_format_supported(), snd_pcm_hw_params_malloc() failed: %s",
+		       snd_strerror(err));
 		return False;
 	}
 
 	if ((err = snd_pcm_hw_params_any(pcm_handle, hwparams)) < 0)
 	{
-		error("snd_pcm_hw_params_malloc: %s\n", snd_strerror(err));
+		logger(Sound, Error,
+		       "alsa_format_supported(), snd_pcm_hw_params_any() failed: %s\n",
+		       snd_strerror(err));
 		return False;
 	}
 	snd_pcm_hw_params_free(hwparams);
@@ -340,8 +358,10 @@ alsa_play(void)
 	struct audio_packet *packet;
 	STREAM out;
 	int len;
+	const unsigned char *data;
+	size_t before;
 	static long prev_s, prev_us;
-	unsigned int duration;
+	int duration;
 	struct timeval tv;
 	int next_tick;
 
@@ -358,18 +378,25 @@ alsa_play(void)
 		return;
 
 	packet = rdpsnd_queue_current_packet();
-	out = &packet->s;
+	out = packet->s;
 
 	next_tick = rdpsnd_queue_next_tick();
 
-	len = (out->end - out->p) / (samplewidth_out * audiochannels_out);
-	if ((len = snd_pcm_writei(out_handle, out->p, ((MAX_FRAMES < len) ? MAX_FRAMES : len))) < 0)
+	before = s_tell(out);
+
+	len = s_remaining(out) / (samplewidth_out * audiochannels_out);
+	len = MIN(len, MAX_FRAMES);
+	in_uint8p(out, data, len);
+
+	len = snd_pcm_writei(out_handle, data, len);
+	if (len < 0)
 	{
-		printf("Fooo!\n");
 		snd_pcm_prepare(out_handle);
 		len = 0;
 	}
-	out->p += (len * samplewidth_out * audiochannels_out);
+
+	/* We might not have written everything */
+	s_seek(out, before + len * samplewidth_out * audiochannels_out);
 
 	gettimeofday(&tv, NULL);
 
@@ -378,7 +405,7 @@ alsa_play(void)
 	if (packet->tick > next_tick)
 		next_tick += 65536;
 
-	if ((out->p == out->end) || duration > next_tick - packet->tick + 500)
+	if (s_check_end(out) || duration > next_tick - packet->tick + 500)
 	{
 		snd_pcm_sframes_t delay_frames;
 		unsigned long delay_us;
@@ -388,9 +415,10 @@ alsa_play(void)
 
 		if (abs((next_tick - packet->tick) - duration) > 20)
 		{
-			DEBUG(("duration: %d, calc: %d, ", duration, next_tick - packet->tick));
-			DEBUG(("last: %d, is: %d, should: %d\n", packet->tick,
-			       (packet->tick + duration) % 65536, next_tick % 65536));
+			logger(Sound, Debug,
+			       "alsa_play(), duration=%d, calc=%d, last=%d, is=%d, should=%d",
+			       duration, next_tick - packet->tick, packet->tick,
+			       (packet->tick + duration) % 65536, next_tick % 65536);
 		}
 
 		if (snd_pcm_delay(out_handle, &delay_frames) < 0)
@@ -412,7 +440,8 @@ alsa_open_in(void)
 	if ((err =
 	     snd_pcm_open(&in_handle, pcm_name, SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK)) < 0)
 	{
-		error("snd_pcm_open: %s\n", snd_strerror(err));
+		logger(Sound, Error, "alsa_open_in(), snd_pcm_open() failed: %s",
+		       snd_strerror(err));
 		return False;
 	}
 
@@ -439,7 +468,8 @@ alsa_set_format_in(RD_WAVEFORMATEX * pwfx)
 
 	if ((err = snd_pcm_start(in_handle)) < 0)
 	{
-		error("snd_pcm_start: %s\n", snd_strerror(err));
+		logger(Sound, Error, "alsa_open_in(), snd_pcm_start() failed: %s",
+		       snd_strerror(err));
 		return False;
 	}
 
